@@ -14,7 +14,7 @@ from ..utils.config import Phase21Config
 
 
 GAS_FIELDS = ["ParticleIDs", "Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"]
-STAR_FIELDS = ["ParticleIDs", "Coordinates", "GFM_StellarFormationTime"]
+STAR_FIELDS = ["ParticleIDs"]
 PROTON_MASS_G = 1.67262192369e-24
 BOLTZMANN_CGS = 1.380649e-16
 
@@ -159,7 +159,13 @@ def build_snapshot_state(
     central_gas, satellite_gas = _split_ids(_ids(gas), counts["central_gas_count"], counts["satellite_gas_count"])
     central_stars, satellite_stars = _split_ids(_ids(stars), counts["central_star_count"], counts["satellite_star_count"])
     gas_ids = _ids(gas)
-    diffuse = ~np.isin(gas_ids, satellite_gas)
+    # ``loadHalo`` follows Subfind ordering: central, satellites, then FoF
+    # fuzz.  Constructing this mask by position is exact and avoids an
+    # extremely expensive np.isin over cluster-sized particle arrays.
+    diffuse = np.ones(len(gas_ids), dtype=bool)
+    satellite_start = counts["central_gas_count"]
+    satellite_stop = satellite_start + counts["satellite_gas_count"]
+    diffuse[satellite_start:satellite_stop] = False
     mass = np.asarray(gas["Masses"], dtype=float) * 1.0e10 / config.h
     temperature = internal_energy_to_temperature(gas["InternalEnergy"], gas["ElectronAbundance"])
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -180,9 +186,6 @@ def build_snapshot_state(
     inner = r_subhalo < config.central_rfrac * r200
     in_halo = r_group < r200
     central_cold = inner & cold & diffuse
-    central_hot = inner & hot & diffuse
-    outer_cold = (~inner) & in_halo & cold & diffuse
-    outer_hot = (~inner) & in_halo & hot & diffuse
     hot_reservoir = in_halo & hot & diffuse
     m_hot = float(mass[hot_reservoir].sum())
     metallicity = np.asarray(gas["GFM_Metallicity"], dtype=float)
@@ -207,10 +210,13 @@ def build_snapshot_state(
         "central_star_ids": central_stars,
         "satellite_star_ids": satellite_stars,
         "other_star_ids": np.empty(0, dtype=np.uint64),
-        "central_cold_ids": np.sort(gas_ids[central_cold]),
-        "central_hot_ids": np.sort(gas_ids[central_hot]),
-        "outer_cold_ids": np.sort(gas_ids[outer_cold]),
-        "outer_hot_ids": np.sort(gas_ids[outer_hot]),
+        # Only the two event anchors consume the complete cold-library IDs.
+        # Historical classifications use the selected tracer parents instead.
+        "central_cold_ids": (
+            np.sort(gas_ids[central_cold])
+            if snap in {config.snap_event_prev, config.snap_event_cur}
+            else np.empty(0, dtype=np.uint64)
+        ),
         "m_hot_msun": m_hot,
         "z_hot_mass_fraction": z_hot,
         "m_cgm_msun": float(mass[(~inner) & in_halo & diffuse].sum()),
@@ -260,6 +266,57 @@ def _load_state(path: Path, expected_snaps: tuple[int, ...] | None = None) -> di
         return None
 
 
+def state_cache_is_valid(path: str | Path, expected_snaps: tuple[int, ...] | None = None) -> bool:
+    """Validate a state NPZ from its directory without loading its arrays."""
+
+    path = Path(path)
+    if not path.is_file():
+        return False
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            names = tuple(data.files)
+        if not names or any("__" not in name for name in names):
+            return False
+        if expected_snaps is not None:
+            prefixes = {name.split("__", 1)[0] for name in names}
+            if any(f"snap{int(snap):03d}" not in prefixes for snap in expected_snaps):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def load_state_snapshot(
+    path: str | Path,
+    snap: int,
+    *,
+    fields: tuple[str, ...] | None = None,
+) -> dict:
+    """Load one snapshot, optionally selecting fields, from a halo state NPZ.
+
+    NPZ members are loaded lazily by NumPy.  Selecting one snapshot and a
+    small field set therefore avoids materializing the complete multi-halo
+    state cache in memory.
+    """
+
+    path = Path(path)
+    prefix = f"snap{int(snap):03d}__"
+    selected = set(fields) if fields is not None else None
+    output = {}
+    with np.load(path, allow_pickle=False) as data:
+        for name in data.files:
+            if not name.startswith(prefix):
+                continue
+            key = name[len(prefix):]
+            if selected is not None and key not in selected:
+                continue
+            value = np.asarray(data[name])
+            output[key] = value.item() if value.ndim == 0 else value
+    if not output:
+        raise ValueError(f"State cache has no requested fields for snap {int(snap)}: {path}")
+    return output
+
+
 def _unresolved_state(branch: dict, snap: int, exc: Exception) -> dict:
     """Build the typed placeholder used for missing non-anchor snapshots."""
 
@@ -275,6 +332,7 @@ def _unresolved_state(branch: dict, snap: int, exc: Exception) -> dict:
         "mstar_msun": _safe_float(branch.get("mstar_msun")),
         "vmax_km_s": np.nan,
         "m_bh_msun": np.nan,
+        "central_cold_ids": np.empty(0, dtype=np.uint64),
         "central_gas_ids": np.empty(0, dtype=np.uint64),
         "satellite_gas_ids": np.empty(0, dtype=np.uint64),
         "other_gas_ids": np.empty(0, dtype=np.uint64),
@@ -356,15 +414,14 @@ def prepare_halo_states(
     """
 
     cache_dir = Path(cache_dir)
-    states_by_index: list[dict[int, dict] | None] = [None] * len(sample)
+    state_paths_by_index: list[Path | None] = [None] * len(sample)
     pending: list[tuple[int, dict, Path]] = []
     for index, record in enumerate(sample):
         path = _state_cache_path(cache_dir, record, config)
-        states = _load_state(path, config.snapshots)
-        if states is None:
+        if not state_cache_is_valid(path, config.snapshots):
             pending.append((index, record, path))
         else:
-            states_by_index[index] = states
+            state_paths_by_index[index] = path
             if verbose:
                 print(
                     f"[states] cached {index + 1}/{len(sample)} "
@@ -406,8 +463,8 @@ def prepare_halo_states(
                 "reason": f"{type(error).__name__}: {error}",
             })
         else:
-            states_by_index[index] = states
             _save_state(path, states)
+            state_paths_by_index[index] = path
         if verbose:
             status = "rejected" if error is not None or states is None else "computed"
             detail = ""
@@ -440,7 +497,7 @@ def prepare_halo_states(
             }
             completed = 0
             for future in as_completed(future_map):
-                sequence, index, record, path = future_map[future]
+                sequence, index, record, path = future_map.pop(future)
                 completed += 1
                 try:
                     states = future.result()
@@ -462,7 +519,7 @@ def prepare_halo_states(
             }
             completed = 0
             for future in as_completed(future_map):
-                sequence, index, record, path = future_map[future]
+                sequence, index, record, path = future_map.pop(future)
                 completed += 1
                 try:
                     states = future.result()
@@ -471,8 +528,8 @@ def prepare_halo_states(
                     accept_result(completed, index, record, path, None, exc)
 
     valid = [
-        {"sample": sample[index], "states": states_by_index[index]}
+        {"sample": sample[index], "state_cache_path": str(state_paths_by_index[index])}
         for index in range(len(sample))
-        if states_by_index[index] is not None
+        if state_paths_by_index[index] is not None
     ]
     return valid, rejected

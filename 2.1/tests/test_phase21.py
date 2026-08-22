@@ -15,7 +15,7 @@ from src.analysis.events import classify_halo_events
 from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics
 from src.io.catalog import _normalise_catalogue, subfind_counts
 from src.io.sampling import _select_candidates
-from src.io.state import build_snapshot_state
+from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
@@ -112,6 +112,23 @@ def test_snapshot_state_keeps_mbh_from_branch(monkeypatch) -> None:
         "/unused", branch, {"BoxSize": 1000.0, "Time": 0.5}, Phase21Config(), catalogue=catalogue
     )
     assert state["m_bh_msun"] == branch["m_bh_msun"]
+
+
+def test_state_cache_supports_selective_snapshot_loading(tmp_path) -> None:
+    """Cached halo states can be validated and read without full materialization."""
+
+    path = tmp_path / "state.npz"
+    _save_state(
+        path,
+        {
+            94: {"snap": 94, "central_cold_ids": np.array([1, 2], dtype=np.uint64), "unused": np.arange(100)},
+            95: {"snap": 95, "central_cold_ids": np.array([3], dtype=np.uint64), "unused": np.arange(200)},
+        },
+    )
+    assert state_cache_is_valid(path, (94, 95))
+    state = load_state_snapshot(path, 95, fields=("central_cold_ids",))
+    assert set(state) == {"central_cold_ids"}
+    np.testing.assert_array_equal(state["central_cold_ids"], np.array([3], dtype=np.uint64))
 
 
 def test_sampling_is_stable_after_subfind_sort() -> None:

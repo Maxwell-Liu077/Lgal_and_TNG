@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ctypes
+import gc
+import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
@@ -9,7 +12,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io.sampling import load_or_build_sample
-from ..io.state import prepare_halo_states
+from ..io.state import load_state_snapshot, prepare_halo_states
 from ..io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
 from ..physics.feedback import compute_agn_strength
 from ..physics.sam_cooling import compute_isothermal_sam_cooling
@@ -30,11 +33,47 @@ def _headers(config: Phase21Config) -> dict[int, dict]:
     return {snap: il.groupcat.loadHeader(config.base_path, snap) for snap in config.snapshots}
 
 
-def _state_for_sample(state_record: dict, snap: int) -> dict:
-    """Read a state branch regardless of JSON or in-memory integer keys."""
+ANCHOR_STATE_FIELDS = ("central_cold_ids",)
+ANALYSIS_STATE_FIELDS = (
+    "snap", "unresolved_snapshot", "unresolved_reason",
+    "group_center_ckpc_h", "subhalo_center_ckpc_h", "r200c_ckpc_h",
+    "r200c_pkpc", "m200c_msun", "mstar_msun", "m_bh_msun",
+    "m_hot_msun", "z_hot_mass_fraction", "m_cgm_msun",
+    "central_gas_ids", "satellite_gas_ids", "other_gas_ids",
+    "central_star_ids", "satellite_star_ids", "other_star_ids",
+)
 
-    states = state_record["states"]
-    return states[snap] if snap in states else states[str(snap)]
+
+def _state_for_sample(
+    state_record: dict,
+    snap: int,
+    *,
+    fields: tuple[str, ...] | None = None,
+) -> dict:
+    """Read one state branch from memory or a lazy per-halo cache reference."""
+
+    if "states" in state_record:
+        states = state_record["states"]
+        state = states[snap] if snap in states else states[str(snap)]
+        if fields is None:
+            return state
+        return {key: state[key] for key in fields if key in state}
+    return load_state_snapshot(state_record["state_cache_path"], snap, fields=fields)
+
+
+def _release_process_memory() -> None:
+    """Release unreachable arrays and return free glibc arenas on Linux."""
+
+    gc.collect()
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        trim = ctypes.CDLL(None).malloc_trim
+        trim.argtypes = [ctypes.c_size_t]
+        trim.restype = ctypes.c_int
+        trim(0)
+    except (AttributeError, OSError):
+        pass
 
 
 def _assign_agn_quartiles(records: list[dict], config: Phase21Config) -> None:
@@ -56,8 +95,14 @@ def _anchor_tracers(states: list[dict], config: Phase21Config, cache_dir: str | 
     previous_catalog = {}
     current_catalog = {}
     for index, record in enumerate(states):
-        previous_catalog[index] = np.asarray(_state_for_sample(record, config.snap_event_prev)["central_cold_ids"], dtype=np.uint64)
-        current_catalog[index] = np.asarray(_state_for_sample(record, config.snap_event_cur)["central_cold_ids"], dtype=np.uint64)
+        previous_catalog[index] = np.asarray(
+            _state_for_sample(record, config.snap_event_prev, fields=ANCHOR_STATE_FIELDS)["central_cold_ids"],
+            dtype=np.uint64,
+        )
+        current_catalog[index] = np.asarray(
+            _state_for_sample(record, config.snap_event_cur, fields=ANCHOR_STATE_FIELDS)["central_cold_ids"],
+            dtype=np.uint64,
+        )
     jobs = (
         (config.snap_event_prev, previous_catalog),
         (config.snap_event_cur, current_catalog),
@@ -296,7 +341,10 @@ def run_phase21(
     records = []
     ledgers = []
     for index, state_record in enumerate(halo_states):
-        states = {snap: _state_for_sample(state_record, snap) for snap in config.snapshots}
+        states = {
+            snap: _state_for_sample(state_record, snap, fields=ANALYSIS_STATE_FIELDS)
+            for snap in config.snapshots
+        }
         event_result, ledger = classify_halo_events(enters[index], exits[index], parent_maps=parent_maps, records=parent_records, states=states, headers=headers, config=config, dt_gyr=dt_gyr)
         previous = states[config.snap_event_prev]
         current = states[config.snap_event_cur]
@@ -333,6 +381,11 @@ def run_phase21(
         }
         records.append(record)
         ledgers.append(ledger)
+        # Raw membership arrays can be tens of GiB for a cluster-sized FoF.
+        # They are no longer retained by ``halo_states`` and can be released
+        # as soon as this halo's scalar result and compact ledger are ready.
+        del states, previous, current
+        _release_process_memory()
     _assign_agn_quartiles(records, config)
     halo_results = records_to_arrays(records)
     binned = compute_binned_statistics(halo_results, config)

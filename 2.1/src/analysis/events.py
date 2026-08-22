@@ -20,6 +20,28 @@ def _record_index(records: dict[str, np.ndarray]) -> dict[int, int]:
     return {int(value): index for index, value in enumerate(np.asarray(records.get("particle_ids", []), dtype=np.uint64))}
 
 
+def _contains_particle_id(state: dict, key: str, particle_id: int) -> bool:
+    """Test membership with one in-place sort instead of a giant Python set.
+
+    Cluster-sized Subfind membership arrays can contain hundreds of millions
+    of IDs.  Turning them into Python sets for every tracer multiplies memory
+    consumption.  A cached sorted ndarray keeps the representation at eight
+    bytes per ID and makes subsequent lookups logarithmic.
+    """
+
+    cache_key = f"__sorted_{key}"
+    values = state.get(cache_key)
+    if values is None:
+        values = np.asarray(state.get(key, []), dtype=np.uint64)
+        if len(values) > 1:
+            values.sort(kind="quicksort")
+        state[cache_key] = values
+    if not len(values):
+        return False
+    position = int(np.searchsorted(values, np.uint64(particle_id)))
+    return position < len(values) and int(values[position]) == int(particle_id)
+
+
 def classify_parent_state(record: dict[str, object], state: dict, header: dict, config: Phase21Config) -> dict[str, str | bool]:
     """Assign the four orthogonal README state fields to one parent."""
 
@@ -51,22 +73,12 @@ def classify_parent_state(record: dict[str, object], state: dict, header: dict, 
     group_radius = float(periodic_radius(coordinates[None, :], group_center, box)[0])
     central_radius = float(periodic_radius(coordinates[None, :], subhalo_center, box)[0])
     radial = "beyond_r200c" if group_radius >= r200 else ("inner" if central_radius < config.central_rfrac * r200 else "outer_halo")
-    if particle_type == 0:
-        central_ids = np.asarray(state.get("central_gas_ids", []), dtype=np.uint64)
-        satellite_ids = np.asarray(state.get("satellite_gas_ids", []), dtype=np.uint64)
-        other_ids = np.asarray(state.get("other_gas_ids", []), dtype=np.uint64)
-    else:
-        central_ids = np.asarray(state.get("central_star_ids", []), dtype=np.uint64)
-        satellite_ids = np.asarray(state.get("satellite_star_ids", []), dtype=np.uint64)
-        other_ids = np.asarray(state.get("other_star_ids", []), dtype=np.uint64)
-    central_set = set(int(value) for value in central_ids)
-    satellite_set = set(int(value) for value in satellite_ids)
-    other_set = set(int(value) for value in other_ids)
-    if particle_id in central_set:
+    suffix = "gas_ids" if particle_type == 0 else "star_ids"
+    if _contains_particle_id(state, f"central_{suffix}", particle_id):
         host = "main_central"
-    elif particle_id in satellite_set:
+    elif _contains_particle_id(state, f"satellite_{suffix}", particle_id):
         host = "satellite"
-    elif particle_id in other_set:
+    elif _contains_particle_id(state, f"other_{suffix}", particle_id):
         host = "other_halo"
     elif particle_type == 0:
         # Full other-subhalo membership is not present in a local halo load;
