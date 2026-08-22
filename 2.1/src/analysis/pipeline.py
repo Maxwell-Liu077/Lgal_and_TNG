@@ -34,13 +34,15 @@ def _headers(config: Phase21Config) -> dict[int, dict]:
 
 
 ANCHOR_STATE_FIELDS = ("central_cold_ids",)
-ANALYSIS_STATE_FIELDS = (
+EVENT_STATE_FIELDS = (
     "snap", "unresolved_snapshot", "unresolved_reason",
     "group_center_ckpc_h", "subhalo_center_ckpc_h", "r200c_ckpc_h",
-    "r200c_pkpc", "m200c_msun", "mstar_msun", "m_bh_msun",
-    "m_hot_msun", "z_hot_mass_fraction", "m_cgm_msun",
     "central_gas_ids", "satellite_gas_ids", "other_gas_ids",
     "central_star_ids", "satellite_star_ids", "other_star_ids",
+)
+PHYSICS_STATE_FIELDS = (
+    "snap", "r200c_pkpc", "m200c_msun", "mstar_msun", "m_bh_msun",
+    "m_hot_msun", "z_hot_mass_fraction", "m_cgm_msun",
 )
 
 
@@ -341,10 +343,22 @@ def run_phase21(
     records = []
     ledgers = []
     for index, state_record in enumerate(halo_states):
-        states = {
-            snap: _state_for_sample(state_record, snap, fields=ANALYSIS_STATE_FIELDS)
-            for snap in config.snapshots
-        }
+        event_snaps = set()
+        if len(enters[index]):
+            event_snaps.update(range(config.snap_start, config.snap_event_cur + 1))
+        if len(exits[index]):
+            event_snaps.update(range(config.snap_event_prev, config.snap_end + 1))
+        needed_snaps = event_snaps | {config.snap_event_prev, config.snap_event_cur}
+        states = {}
+        for snap in sorted(needed_snaps):
+            fields = set(EVENT_STATE_FIELDS) if snap in event_snaps else set()
+            if snap in {config.snap_event_prev, config.snap_event_cur}:
+                fields.update(PHYSICS_STATE_FIELDS)
+            states[snap] = _state_for_sample(
+                state_record,
+                snap,
+                fields=tuple(sorted(fields)),
+            )
         event_result, ledger = classify_halo_events(enters[index], exits[index], parent_maps=parent_maps, records=parent_records, states=states, headers=headers, config=config, dt_gyr=dt_gyr)
         previous = states[config.snap_event_prev]
         current = states[config.snap_event_cur]
