@@ -16,6 +16,7 @@ from src.analysis.statistics import compute_agn_quartile_statistics, compute_com
 from src.io.catalog import _normalise_catalogue, subfind_counts
 from src.io.sampling import _select_candidates
 from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
+from src.io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
@@ -29,7 +30,7 @@ def test_config_uses_merged_final_bin_and_seed() -> None:
     np.testing.assert_allclose(config.mass_bin_edges[-2:], [11.0, 11.5])
     assert config.random_seed == 202608
     assert config.tracer_workers == 64
-    assert config.state_workers == 4
+    assert config.state_workers == 1
     assert config.state_parallel_backend == "thread"
 
 
@@ -129,6 +130,74 @@ def test_state_cache_supports_selective_snapshot_loading(tmp_path) -> None:
     state = load_state_snapshot(path, 95, fields=("central_cold_ids",))
     assert set(state) == {"central_cold_ids"}
     np.testing.assert_array_equal(state["central_cold_ids"], np.array([3], dtype=np.uint64))
+
+
+def test_tracer_scans_parallelize_and_cache_by_snapshot_chunk(tmp_path) -> None:
+    """Chunk workers preserve duplicate labels and exact parent records."""
+
+    import h5py
+
+    base_path = tmp_path / "output"
+    snap_dir = base_path / "snapdir_094"
+    snap_dir.mkdir(parents=True)
+    chunks = (
+        (
+            np.array([10, 20, 10], dtype=np.uint64),
+            np.array([100, 200, 101], dtype=np.uint64),
+            np.array([10, 20], dtype=np.uint64),
+        ),
+        (
+            np.array([30, 99], dtype=np.uint64),
+            np.array([300, 999], dtype=np.uint64),
+            np.array([30], dtype=np.uint64),
+        ),
+    )
+    for index, (parents, tracers, gas_ids) in enumerate(chunks):
+        with h5py.File(snap_dir / f"snap_094.{index}.hdf5", "w") as handle:
+            tracer_group = handle.create_group("PartType3")
+            tracer_group["ParentID"] = parents
+            tracer_group["TracerID"] = tracers
+            gas = handle.create_group("PartType0")
+            gas["ParticleIDs"] = gas_ids
+            gas["Coordinates"] = np.column_stack((gas_ids, np.zeros((len(gas_ids), 2))))
+            gas["StarFormationRate"] = np.zeros(len(gas_ids))
+            gas["InternalEnergy"] = np.full(len(gas_ids), 100.0)
+            gas["ElectronAbundance"] = np.full(len(gas_ids), 0.1)
+
+    cache_dir = tmp_path / "cache"
+    grouped = scan_parent_to_tracer(
+        base_path,
+        94,
+        {0: np.array([10, 30], dtype=np.uint64), 1: np.array([10], dtype=np.uint64)},
+        cache_dir=cache_dir,
+        block_size=2,
+        max_workers=2,
+        parallel_backend="process",
+    )
+    np.testing.assert_array_equal(grouped[0], np.array([100, 101, 300], dtype=np.uint64))
+    np.testing.assert_array_equal(grouped[1], np.array([100, 101], dtype=np.uint64))
+
+    parent_map = scan_tracer_parent_map(
+        base_path,
+        94,
+        np.array([100, 300], dtype=np.uint64),
+        cache_dir=cache_dir,
+        block_size=2,
+        max_workers=2,
+        parallel_backend="process",
+    )
+    assert parent_map == {100: 10, 300: 30}
+    records = lookup_parent_records(
+        base_path,
+        94,
+        np.array([10, 30], dtype=np.uint64),
+        cache_dir=cache_dir,
+        block_size=2,
+        max_workers=2,
+        parallel_backend="process",
+    )
+    np.testing.assert_array_equal(records["particle_ids"], np.array([10, 30], dtype=np.uint64))
+    assert len(list((cache_dir / "chunk_scans").glob("**/chunk_*.npz"))) == 6
 
 
 def test_sampling_is_stable_after_subfind_sort() -> None:

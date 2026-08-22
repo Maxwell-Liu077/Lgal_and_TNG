@@ -6,7 +6,6 @@ import ctypes
 import gc
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -111,35 +110,18 @@ def _anchor_tracers(states: list[dict], config: Phase21Config, cache_dir: str | 
     )
     if verbose:
         print("[events] scanning parent->tracer snap94 and snap95", flush=True)
-    if not any(len(ids) for _, catalog in jobs for ids in catalog.values()):
-        scanned_by_snap = {snap: {} for snap, _ in jobs}
-    elif config.tracer_parallel_backend == "process" and config.tracer_workers > 1:
-        with ProcessPoolExecutor(max_workers=min(2, config.tracer_workers)) as executor:
-            futures = {
-                executor.submit(
-                    _scan_parent_to_tracer_worker,
-                    config.base_path,
-                    snap,
-                    catalog,
-                    Path(cache_dir) / "tracer",
-                    config.tracer_read_block_size,
-                ): snap
-                for snap, catalog in jobs
-            }
-            scanned_by_snap = {}
-            for future, snap in futures.items():
-                scanned_by_snap[snap] = future.result()
-    else:
-        scanned_by_snap = {
-            snap: scan_parent_to_tracer(
-                config.base_path,
-                snap,
-                catalog,
-                cache_dir=Path(cache_dir) / "tracer",
-                block_size=config.tracer_read_block_size,
-            )
-            for snap, catalog in jobs
-        }
+    scanned_by_snap = {}
+    for snap, catalog in jobs:
+        scanned_by_snap[snap] = scan_parent_to_tracer(
+            config.base_path,
+            snap,
+            catalog,
+            cache_dir=Path(cache_dir) / "tracer",
+            block_size=config.tracer_read_block_size,
+            max_workers=config.tracer_workers,
+            parallel_backend=config.tracer_parallel_backend,
+            verbose=verbose,
+        )
     previous_scanned = scanned_by_snap[config.snap_event_prev]
     current_scanned = scanned_by_snap[config.snap_event_cur]
     enters = []
@@ -154,32 +136,17 @@ def _anchor_tracers(states: list[dict], config: Phase21Config, cache_dir: str | 
     return enters, exits
 
 
-def _scan_parent_to_tracer_worker(
-    base_path: str,
-    snap: int,
-    parent_ids_by_label: dict[int, np.ndarray],
-    cache_dir: str | Path,
-    block_size: int,
-) -> dict[int, np.ndarray]:
-    """Process-safe worker for one endpoint ParentID→TracerID scan."""
-
-    return scan_parent_to_tracer(
-        base_path,
-        snap,
-        parent_ids_by_label,
-        cache_dir=cache_dir,
-        block_size=block_size,
-    )
-
-
 def _parent_product_worker(
     base_path: str,
     snap: int,
     all_events: np.ndarray,
     cache_dir: str | Path,
     block_size: int,
+    max_workers: int,
+    parallel_backend: str,
+    verbose: bool,
 ) -> tuple[int, dict[int, int], dict[int, dict]]:
-    """Process-safe worker for one history snapshot's tracer products."""
+    """Resolve one history snapshot using chunk-level parallel scans."""
 
     tracer_cache = Path(cache_dir) / "tracer"
     particle_cache = Path(cache_dir) / "particles"
@@ -189,6 +156,9 @@ def _parent_product_worker(
         all_events,
         cache_dir=tracer_cache,
         block_size=block_size,
+        max_workers=max_workers,
+        parallel_backend=parallel_backend,
+        verbose=verbose,
     )
     parent_ids = np.asarray(list(mapping.values()), dtype=np.uint64)
     table = lookup_parent_records(
@@ -197,6 +167,9 @@ def _parent_product_worker(
         parent_ids,
         cache_dir=particle_cache,
         block_size=block_size,
+        max_workers=max_workers,
+        parallel_backend=parallel_backend,
+        verbose=verbose,
     )
     indexed = {}
     for index, parent_id in enumerate(np.asarray(table.get("particle_ids", []), dtype=np.uint64)):
@@ -235,49 +208,25 @@ def _parent_products(
         return parent_maps, records
 
     jobs = list(config.snapshots)
-    if config.tracer_parallel_backend == "process" and config.tracer_workers > 1:
-        max_workers = min(config.tracer_workers, len(jobs))
-        with ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(
-                    _parent_product_worker,
-                    config.base_path,
-                    snap,
-                    all_events,
-                    cache_dir,
-                    config.tracer_read_block_size,
-                ): snap
-                for snap in jobs
-            }
-            completed = 0
-            for future in as_completed(futures):
-                snap, mapping, indexed = future.result()
-                parent_maps[snap] = mapping
-                records[snap] = indexed
-                completed += 1
-                if verbose:
-                    print(
-                        f"[tracer] snap={snap:03d} ({completed}/{len(jobs)}) "
-                        f"tracers={len(mapping)} parents={len(indexed)}",
-                        flush=True,
-                    )
-    else:
-        for number, snap in enumerate(jobs, start=1):
-            snap, mapping, indexed = _parent_product_worker(
-                config.base_path,
-                snap,
-                all_events,
-                cache_dir,
-                config.tracer_read_block_size,
+    for number, snap in enumerate(jobs, start=1):
+        snap, mapping, indexed = _parent_product_worker(
+            config.base_path,
+            snap,
+            all_events,
+            cache_dir,
+            config.tracer_read_block_size,
+            config.tracer_workers,
+            config.tracer_parallel_backend,
+            verbose,
+        )
+        parent_maps[snap] = mapping
+        records[snap] = indexed
+        if verbose:
+            print(
+                f"[tracer] snap={snap:03d} ({number}/{len(jobs)}) "
+                f"tracers={len(mapping)} parents={len(indexed)}",
+                flush=True,
             )
-            parent_maps[snap] = mapping
-            records[snap] = indexed
-            if verbose:
-                print(
-                    f"[tracer] snap={snap:03d} ({number}/{len(jobs)}) "
-                    f"tracers={len(mapping)} parents={len(indexed)}",
-                    flush=True,
-                )
     return parent_maps, records
 
 
@@ -411,6 +360,8 @@ def run_phase21(
         "snap_event_prev": config.snap_event_prev, "snap_event_cur": config.snap_event_cur,
         "snap_end": config.snap_end, "dt_gyr": dt_gyr, "random_seed": config.random_seed,
         "selected_halo_count": len(records), "tracer_workers": config.tracer_workers,
+        "tracer_parallel_backend": config.tracer_parallel_backend,
+        "tracer_parallel_unit": "HDF5 snapshot chunk",
         "state_workers": config.state_workers,
         "state_parallel_backend": config.state_parallel_backend,
         "catalogue_cache": "snapshot-level immutable NPZ cache",
