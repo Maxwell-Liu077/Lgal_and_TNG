@@ -27,6 +27,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "data" / "processed")
     parser.add_argument("--figure-dir", type=Path, default=PROJECT_ROOT / "results" / "figures")
     parser.add_argument("--constant-cooling", type=float, default=None, help="Use a constant cooling coefficient for synthetic smoke runs")
+    parser.add_argument("--state-workers", type=int, default=Phase21Config.state_workers, help="Concurrent halo-state workers")
+    parser.add_argument("--state-backend", choices=("serial", "thread", "process"), default=Phase21Config.state_parallel_backend, help="Halo-state concurrency backend")
     parser.add_argument("--rebuild-sample", action="store_true")
     parser.add_argument("--quiet", action="store_true")
     return parser
@@ -37,7 +39,11 @@ def main(argv: list[str] | None = None) -> int:
 
     args = _parser().parse_args(argv)
     cooling = ConstantCoolingFunction(args.constant_cooling) if args.constant_cooling is not None else LgalCoolingFunction.from_directory(args.cooling_table_dir)
-    config = Phase21Config(base_path=args.base_path)
+    config = Phase21Config(
+        base_path=args.base_path,
+        state_workers=args.state_workers,
+        state_parallel_backend=args.state_backend,
+    )
     result = run_phase21(cooling, config=config, cache_dir=args.cache_dir, rebuild_sample=args.rebuild_sample, verbose=not args.quiet)
     prefix = args.output_dir / "phase21_snap090_099_seed202608"
     for label, path in save_phase21_result(result, prefix).items():

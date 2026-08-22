@@ -11,27 +11,41 @@ import numpy as np
 
 from ..utils.config import Phase21Config
 from ..utils.arrays import json_ready
+from .catalog import load_catalogue_cache
 from .mpb import load_mpb
 
 
-def load_z99_candidates(base_path: str, config: Phase21Config) -> list[dict]:
+def load_z99_candidates(
+    base_path: str,
+    config: Phase21Config,
+    *,
+    catalogue: dict[str, np.ndarray] | None = None,
+) -> list[dict]:
     """Read valid snap99 central candidates from the TNG group catalogue."""
 
-    try:
-        import illustris_python as il
-    except ImportError as exc:
-        raise ImportError("illustris_python is required for TNG selection") from exc
-    halos = il.groupcat.loadHalos(base_path, config.snap_selection, fields=["GroupFirstSub", "Group_M_Crit200", "Group_R_Crit200"])
-    subhalos = il.groupcat.loadSubhalos(base_path, config.snap_selection, fields=["SubhaloFlag", "SubhaloMassInRadType"])
-    if not isinstance(halos, dict) or not isinstance(subhalos, dict):
-        raise ValueError("TNG catalogue loaders must return dictionaries")
-    first = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
-    flags = np.asarray(subhalos["SubhaloFlag"], dtype=bool)
-    mstar_type = np.asarray(subhalos["SubhaloMassInRadType"], dtype=float)
+    if catalogue is None:
+        try:
+            import illustris_python as il
+        except ImportError as exc:
+            raise ImportError("illustris_python is required for TNG selection") from exc
+        halos = il.groupcat.loadHalos(base_path, config.snap_selection, fields=["GroupFirstSub", "Group_M_Crit200", "Group_R_Crit200"])
+        subhalos = il.groupcat.loadSubhalos(base_path, config.snap_selection, fields=["SubhaloFlag", "SubhaloMassInRadType"])
+        if not isinstance(halos, dict) or not isinstance(subhalos, dict):
+            raise ValueError("TNG catalogue loaders must return dictionaries")
+        first = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
+        m200_raw = np.asarray(halos["Group_M_Crit200"], dtype=float)
+        r200 = np.asarray(halos["Group_R_Crit200"], dtype=float)
+        flags = np.asarray(subhalos["SubhaloFlag"], dtype=bool)
+        mstar_type = np.asarray(subhalos["SubhaloMassInRadType"], dtype=float)
+    else:
+        first = np.asarray(catalogue["GroupFirstSub"], dtype=np.int64)
+        m200_raw = np.asarray(catalogue["Group_M_Crit200"], dtype=float)
+        r200 = np.asarray(catalogue["Group_R_Crit200"], dtype=float)
+        flags = np.asarray(catalogue["SubhaloFlag"], dtype=bool)
+        mstar_type = np.asarray(catalogue["SubhaloMassInRadType"], dtype=float)
     if mstar_type.ndim != 2 or mstar_type.shape[1] <= 4:
         raise ValueError("SubhaloMassInRadType must contain the stellar component")
-    m200 = np.asarray(halos["Group_M_Crit200"], dtype=float) * 1.0e10 / config.h
-    r200 = np.asarray(halos["Group_R_Crit200"], dtype=float)
+    m200 = m200_raw * 1.0e10 / config.h
     if not (len(first) == len(m200) == len(r200)):
         raise ValueError("Halo catalogue fields have inconsistent lengths")
     valid_first = (first >= 0) & (first < len(flags)) & (first < mstar_type.shape[0])
@@ -116,11 +130,13 @@ def build_sample(
     config: Phase21Config,
     *,
     mpb_loader: Callable[[str, int, Phase21Config], dict] = load_mpb,
+    catalogues: dict[int, dict[str, np.ndarray]] | None = None,
     verbose: bool = True,
 ) -> tuple[list[dict], dict]:
     """Build the selected sample and attach a valid snap90--99 MPB."""
 
-    candidates = load_z99_candidates(base_path, config)
+    catalogue = catalogues.get(config.snap_selection) if catalogues is not None else None
+    candidates = load_z99_candidates(base_path, config, catalogue=catalogue)
     accepted: list[dict] = []
     rejected: list[dict] = []
     candidate_counts = []
@@ -137,7 +153,19 @@ def build_sample(
             candidate = group[int(position)]
             try:
                 record = dict(candidate)
-                record["mpb"] = mpb_loader(base_path, int(candidate["subfind_id_z99"]), config)
+                if mpb_loader is load_mpb:
+                    record["mpb"] = mpb_loader(
+                        base_path,
+                        int(candidate["subfind_id_z99"]),
+                        config,
+                        catalogues=catalogues,
+                    )
+                else:
+                    record["mpb"] = mpb_loader(
+                        base_path,
+                        int(candidate["subfind_id_z99"]),
+                        config,
+                    )
                 record.update({
                     "sample_index": len(accepted),
                     "sample_rank_in_bin": accepted_in_bin,
@@ -150,7 +178,12 @@ def build_sample(
             except Exception as exc:
                 rejected.append({"subfind_id_z99": candidate["subfind_id_z99"], "reason": f"{type(exc).__name__}: {exc}"})
             if verbose:
-                print(f"[sample] bin={bin_index} {accepted_in_bin}/{min(config.sample_per_bin, len(group))} sub={candidate['subfind_id_z99']}")
+                print(
+                    f"[sample] bin={bin_index} "
+                    f"{accepted_in_bin}/{min(config.sample_per_bin, len(group))} "
+                    f"sub={candidate['subfind_id_z99']}",
+                    flush=True,
+                )
         selected_counts.append(accepted_in_bin)
     metadata = {
         "fingerprint": config.fingerprint,
@@ -195,7 +228,15 @@ def load_sample(cache_dir: str | Path, config: Phase21Config | None = None) -> t
     return json.loads(sample_path.read_text(encoding="utf-8")), json.loads(metadata_path.read_text(encoding="utf-8"))
 
 
-def load_or_build_sample(config: Phase21Config, *, cache_dir: str | Path, rebuild: bool = False, verbose: bool = True) -> tuple[list[dict], dict]:
+def load_or_build_sample(
+    config: Phase21Config,
+    *,
+    cache_dir: str | Path,
+    rebuild: bool = False,
+    mpb_loader: Callable[[str, int, Phase21Config], dict] = load_mpb,
+    catalogues: dict[int, dict[str, np.ndarray]] | None = None,
+    verbose: bool = True,
+) -> tuple[list[dict], dict]:
     """Load the sample cache or build it from the external TNG catalogues."""
 
     paths = _sample_paths(cache_dir, config)
@@ -206,6 +247,19 @@ def load_or_build_sample(config: Phase21Config, *, cache_dir: str | Path, rebuil
                 return sample, metadata
         except Exception:
             pass
-    sample, metadata = build_sample(config.base_path, config, verbose=verbose)
+    if catalogues is None and mpb_loader is load_mpb:
+        catalogues = load_catalogue_cache(
+            config.base_path,
+            config.snapshots,
+            cache_dir=cache_dir,
+            verbose=verbose,
+        )
+    sample, metadata = build_sample(
+        config.base_path,
+        config,
+        mpb_loader=mpb_loader,
+        catalogues=catalogues,
+        verbose=verbose,
+    )
     save_sample(sample, metadata, cache_dir, config)
     return sample, metadata

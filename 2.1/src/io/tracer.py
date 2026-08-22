@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
 
 
-def snapshot_chunk_paths(base_path: str | Path, snap: int) -> list[Path]:
-    """Return numerically ordered full-snapshot HDF5 chunks."""
+@lru_cache(maxsize=64)
+def _snapshot_chunk_path_strings(base_path: str, snap: int) -> tuple[str, ...]:
+    """Cache the immutable glob result for one snapshot."""
 
     base = Path(base_path)
     tag = f"{int(snap):03d}"
@@ -23,7 +25,13 @@ def snapshot_chunk_paths(base_path: str | Path, snap: int) -> list[Path]:
     paths = sorted(set(paths), key=lambda path: int(re.search(r"\.(\d+)\.hdf5$", path.name).group(1)) if re.search(r"\.(\d+)\.hdf5$", path.name) else 0)
     if not paths:
         raise FileNotFoundError(f"No snapshot chunks for snap={snap} in {base_path}")
-    return paths
+    return tuple(str(path) for path in paths)
+
+
+def snapshot_chunk_paths(base_path: str | Path, snap: int) -> list[Path]:
+    """Return numerically ordered full-snapshot HDF5 chunks."""
+
+    return [Path(path) for path in _snapshot_chunk_path_strings(str(base_path), int(snap))]
 
 
 def _match(values: np.ndarray, targets: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -168,9 +176,16 @@ def scan_tracer_to_parent(
                 tracers = np.asarray(group["TracerID"][start:stop], dtype=np.uint64)
                 valid, positions = _match(tracers, targets)
                 if np.any(valid):
-                    for tracer_index in np.where(valid)[0]:
-                        label = labels_by_id[int(tracers[tracer_index])]
-                        selected.setdefault(label, []).append(np.asarray([group["ParentID"][start + int(tracer_index)]], dtype=np.uint64))
+                    indices = np.flatnonzero(valid)
+                    parent_values = np.asarray(
+                        group["ParentID"][start:stop],
+                        dtype=np.uint64,
+                    )[indices]
+                    for tracer_value, parent_value in zip(tracers[indices], parent_values):
+                        label = labels_by_id[int(tracer_value)]
+                        selected.setdefault(label, []).append(
+                            np.asarray([parent_value], dtype=np.uint64)
+                        )
     merged = {label: np.concatenate(parts) for label, parts in selected.items()}
     if path is not None:
         _save_map(path, merged)
@@ -225,12 +240,18 @@ def scan_tracer_parent_map(
                 stop = min(start + block_size, len(group["TracerID"]))
                 values = np.asarray(group["TracerID"][start:stop], dtype=np.uint64)
                 valid, _ = _match(values, targets)
-                for index in np.where(valid)[0]:
-                    tracer = int(values[index])
-                    parent = int(group["ParentID"][start + int(index)])
-                    if tracer in found and found[tracer] != parent:
-                        raise ValueError(f"TracerID {tracer} has multiple parents at snap {snap}")
-                    found[tracer] = parent
+                if np.any(valid):
+                    indices = np.flatnonzero(valid)
+                    parent_values = np.asarray(
+                        group["ParentID"][start:stop],
+                        dtype=np.uint64,
+                    )[indices]
+                    for tracer_value, parent_value in zip(values[indices], parent_values):
+                        tracer = int(tracer_value)
+                        parent = int(parent_value)
+                        if tracer in found and found[tracer] != parent:
+                            raise ValueError(f"TracerID {tracer} has multiple parents at snap {snap}")
+                        found[tracer] = parent
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp.npz")

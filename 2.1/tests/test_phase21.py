@@ -12,6 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.events import classify_halo_events
 from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics
+from src.io.catalog import _normalise_catalogue, subfind_counts
 from src.io.sampling import _select_candidates
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
@@ -26,6 +27,38 @@ def test_config_uses_merged_final_bin_and_seed() -> None:
     np.testing.assert_allclose(config.mass_bin_edges[-2:], [11.0, 11.5])
     assert config.random_seed == 202608
     assert config.tracer_workers == 64
+    assert config.state_workers == 4
+    assert config.state_parallel_backend == "thread"
+
+
+def test_snapshot_catalogue_cache_reproduces_subfind_counts() -> None:
+    """Bulk catalogue arrays provide the same central/satellite split."""
+
+    halos = {
+        "GroupFirstSub": np.array([0, 2], dtype=np.int64),
+        "GroupNsubs": np.array([2, 1], dtype=np.int64),
+    }
+    subhalos = {
+        "SubhaloFlag": np.array([True, True, True]),
+        "SubhaloMassInRadType": np.ones((3, 6), dtype=float),
+        "SubhaloLenType": np.array(
+            [
+                [10, 0, 0, 0, 4, 0],
+                [3, 0, 0, 0, 2, 0],
+                [8, 0, 0, 0, 5, 0],
+            ],
+            dtype=np.int64,
+        ),
+        "SubhaloVmax": np.ones(3),
+        "SubhaloBHMass": np.zeros(3),
+    }
+    catalogue = _normalise_catalogue(halos, subhalos)
+    assert subfind_counts(catalogue, 0) == {
+        "central_gas_count": 10,
+        "satellite_gas_count": 3,
+        "central_star_count": 4,
+        "satellite_star_count": 2,
+    }
 
 
 def test_sampling_is_stable_after_subfind_sort() -> None:

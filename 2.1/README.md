@@ -312,6 +312,9 @@ $(\dot M_{\rm stay,out},\dot M_{\rm recycled,out},\dot M_{\rm other,out})$。
 ## 8. 计算契约
 
 - 默认使用 64 个进程扫描 tracer；
+- groupcat 的 `GroupFirstSub`、`GroupNsubs`、`SubhaloLenType` 及 MPB 所需的子晕字段按快照一次读取，并缓存为 `data/interim/cache/catalogues/*.npz`；
+- 默认使用 4 个共享内存 worker 构建逐晕状态；可用 `state_workers=1` 与 `state_parallel_backend="serial"` 在共享存储压力较大时退回串行；
+- 星体状态读取只保留实际使用的 `ParticleIDs`、`Coordinates` 和 `GFM_StellarFormationTime` 字段；
 - 样本、90--99 MPB、逐快照状态、tracer-parent 映射和事件账本分别缓存；
 - fingerprint 包含模拟名、snap范围、事件锚点、质量箱、随机种子、状态定义、`other`规则、分类规则、tracer权重和schema版本；
 - 合法零结果写入缓存，读取失败不能写成零；所有缓存采用原子写入。
@@ -329,4 +332,6 @@ NPZ，以及包含定义、有效数、`other`比例和闭合残差的元数据 
 
 命令行入口为 `scripts/run_analysis.py`；可通过 `--base-path`、
 `--cooling-table-dir`、`--cache-dir`、`--output-dir`、`--figure-dir`、
-`--rebuild-sample` 和 `--quiet` 覆盖运行路径与输出行为。
+`--state-workers`、`--state-backend`、`--rebuild-sample` 和 `--quiet` 覆盖运行路径、
+并行策略与输出行为。首次运行建议先使用 1--4 个 state worker，在实际共享
+文件系统上测量后再提高并发数。

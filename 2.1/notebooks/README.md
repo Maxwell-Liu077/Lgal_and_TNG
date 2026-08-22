@@ -8,5 +8,6 @@ complete snap90--99 pipeline, serialization, closure audit, and figures.
 It defaults to `RUN_ANALYSIS = False` so it can be opened without local TNG
 snapshots. Set `RUN_ANALYSIS = True`, update `TNG50_BASE_PATH` or `BASE_PATH`,
 and set `USE_CONSTANT_COOLING = False` when the eight Henriques cooling tables
-are available. The reproducible non-notebook entry point remains
-`scripts/run_analysis.py`.
+are available. `STATE_WORKERS` and `STATE_BACKEND` expose the conservative
+parallelism controls used by the optimized state builder. The reproducible
+non-notebook entry point remains `scripts/run_analysis.py`.

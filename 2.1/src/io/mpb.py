@@ -41,8 +41,20 @@ def _unresolved_branch(snap: int, reason: str) -> dict:
     }
 
 
-def load_mpb(base_path: str, subhalo_id_z99: int, config: Phase21Config) -> dict[int, dict]:
-    """Load one snap90--99 branch and endpoint subhalo properties."""
+def load_mpb(
+    base_path: str,
+    subhalo_id_z99: int,
+    config: Phase21Config,
+    *,
+    catalogues: dict[int, dict[str, np.ndarray]] | None = None,
+) -> dict[int, dict]:
+    """Load one snap90--99 branch and endpoint subhalo properties.
+
+    ``catalogues`` is an optional snapshot-level cache.  When supplied, it
+    replaces one ``loadSingle`` group/subhalo query per MPB node with array
+    indexing into data loaded once per snapshot.  The fallback keeps the
+    public three-argument API usable for small callers and tests.
+    """
 
     try:
         import illustris_python as il
@@ -65,14 +77,25 @@ def load_mpb(base_path: str, subhalo_id_z99: int, config: Phase21Config) -> dict
         try:
             group_id = int(tree["SubhaloGrNr"][index])
             subfind_id = int(tree["SubfindID"][index])
-            group = il.groupcat.loadSingle(base_path, snap, haloID=group_id)
-            subhalo = il.groupcat.loadSingle(base_path, snap, subhaloID=subfind_id)
-            group_first = int(group["GroupFirstSub"])
-            mass_type = np.asarray(subhalo["SubhaloMassInRadType"], dtype=float)
             m200 = float(tree["Group_M_Crit200"][index]) * 1.0e10 / config.h
             r200 = float(tree["Group_R_Crit200"][index])
             group_center = np.asarray(tree["GroupPos"][index], dtype=float)
             subhalo_center = np.asarray(tree["SubhaloPos"][index], dtype=float)
+            catalogue = catalogues.get(snap) if catalogues is not None else None
+            if catalogue is not None:
+                group_first = int(catalogue["GroupFirstSub"][group_id])
+                mass_type = np.asarray(catalogue["SubhaloMassInRadType"][subfind_id], dtype=float)
+                subhalo_flag = bool(catalogue["SubhaloFlag"][subfind_id])
+                vmax = float(catalogue["SubhaloVmax"][subfind_id])
+                bh_mass = float(catalogue["SubhaloBHMass"][subfind_id])
+            else:
+                group = il.groupcat.loadSingle(base_path, snap, haloID=group_id)
+                subhalo = il.groupcat.loadSingle(base_path, snap, subhaloID=subfind_id)
+                group_first = int(group["GroupFirstSub"])
+                mass_type = np.asarray(subhalo["SubhaloMassInRadType"], dtype=float)
+                subhalo_flag = bool(subhalo.get("SubhaloFlag", True))
+                vmax = float(subhalo.get("SubhaloVmax", np.nan))
+                bh_mass = float(subhalo["SubhaloBHMass"]) if "SubhaloBHMass" in subhalo else float("nan")
             if (
                 not np.isfinite(m200) or not np.isfinite(r200) or m200 <= 0 or r200 <= 0
                 or mass_type.ndim != 1 or len(mass_type) <= 4
@@ -86,14 +109,14 @@ def load_mpb(base_path: str, subhalo_id_z99: int, config: Phase21Config) -> dict
                 "subfind_id": subfind_id,
                 "group_first_sub": group_first,
                 "is_main_central": subfind_id == group_first,
-                "subhalo_flag": bool(subhalo.get("SubhaloFlag", True)),
+                "subhalo_flag": subhalo_flag,
                 "group_center_ckpc_h": group_center.tolist(),
                 "subhalo_center_ckpc_h": subhalo_center.tolist(),
                 "m200c_msun": m200,
                 "r200c_ckpc_h": r200,
                 "mstar_msun": float(mass_type[4] * 1.0e10 / config.h),
-                "vmax_km_s": float(subhalo.get("SubhaloVmax", np.nan)),
-                "m_bh_msun": float(subhalo["SubhaloBHMass"]) * 1.0e10 / config.h if "SubhaloBHMass" in subhalo else float("nan"),
+                "vmax_km_s": vmax,
+                "m_bh_msun": bh_mass * 1.0e10 / config.h if np.isfinite(bh_mass) else float("nan"),
             }
         except Exception as exc:
             if snap in {config.snap_event_prev, config.snap_event_cur}:

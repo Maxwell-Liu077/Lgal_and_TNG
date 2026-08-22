@@ -40,8 +40,11 @@ class Phase21Config:
     tracer_read_block_size: int = 2_000_000
     tracer_workers: int = 64
     tracer_parallel_backend: str = "process"
-    state_workers: int = 1
-    state_parallel_backend: str = "serial"
+    # Four shared-memory workers overlap independent halo reads while using a
+    # single snapshot-level catalogue cache.  Set workers=1/backend=serial on
+    # filesystems where concurrent HDF5 reads are undesirable.
+    state_workers: int = 4
+    state_parallel_backend: str = "thread"
     cache_schema_version: int = 1
 
     # These strings are part of the cache contract.  Keeping them in the
@@ -80,6 +83,8 @@ class Phase21Config:
             raise ValueError("tracer_read_block_size must be positive")
         if self.state_workers < 1:
             raise ValueError("state_workers must be positive")
+        if self.state_parallel_backend not in {"serial", "thread", "process"}:
+            raise ValueError("Invalid state_parallel_backend")
 
     @property
     def mass_bin_edges(self) -> np.ndarray:
