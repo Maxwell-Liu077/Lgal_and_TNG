@@ -406,6 +406,166 @@ def _load_array_chunk(
         return None
 
 
+def _atomic_save_arrays(path: Path, values: dict[str, np.ndarray]) -> None:
+    """Atomically save a final array cache without pickle payloads."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp.npz")
+    np.savez(temporary, **values)
+    temporary.replace(path)
+
+
+def _load_tracer_parent_final(path: Path) -> dict[str, np.ndarray] | None:
+    """Load and validate one final TracerID→ParentID array cache."""
+
+    if not path.is_file():
+        return None
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            tracer_ids = np.asarray(data["tracer_ids"], dtype=np.uint64)
+            parent_ids = np.asarray(data["parent_ids"], dtype=np.uint64)
+        if tracer_ids.ndim != 1 or parent_ids.shape != tracer_ids.shape:
+            return None
+        if len(tracer_ids) > 1 and not np.all(tracer_ids[1:] > tracer_ids[:-1]):
+            order = np.argsort(tracer_ids, kind="stable")
+            tracer_ids = tracer_ids[order]
+            parent_ids = parent_ids[order]
+            if np.any(tracer_ids[1:] == tracer_ids[:-1]):
+                return None
+        return {"tracer_ids": tracer_ids, "parent_ids": parent_ids}
+    except Exception:
+        return None
+
+
+def _load_parent_records_final(path: Path) -> dict[str, np.ndarray] | None:
+    """Load and validate one final columnar parent-record cache."""
+
+    if not path.is_file():
+        return None
+    template = _empty_records()
+    try:
+        with np.load(path, allow_pickle=False) as data:
+            records = {key: np.asarray(data[key], dtype=value.dtype) for key, value in template.items()}
+        count = len(records["particle_ids"])
+        if any(len(values) != count for values in records.values()):
+            return None
+        if records["particle_ids"].ndim != 1 or records["coordinates"].shape != (count, 3):
+            return None
+        particle_ids = records["particle_ids"]
+        if count > 1 and not np.all(particle_ids[1:] > particle_ids[:-1]):
+            order = np.argsort(particle_ids, kind="stable")
+            if np.any(particle_ids[order][1:] == particle_ids[order][:-1]):
+                return None
+            records = {key: values[order] for key, values in records.items()}
+        return records
+    except Exception:
+        return None
+
+
+def _subset_mask(values: np.ndarray, targets: np.ndarray) -> np.ndarray:
+    """Return membership in an already sorted unique uint64 target array."""
+
+    values = np.asarray(values, dtype=np.uint64)
+    targets = np.asarray(targets, dtype=np.uint64)
+    if not len(values) or not len(targets):
+        return np.zeros(len(values), dtype=bool)
+    positions = np.searchsorted(targets, values)
+    valid = positions < len(targets)
+    selected = np.flatnonzero(valid)
+    valid[selected] = targets[positions[selected]] == values[selected]
+    return valid
+
+
+def reuse_parent_product_subset_caches(
+    base_path: str | Path,
+    snap: int,
+    tracer_ids: np.ndarray,
+    superset_tracer_ids: np.ndarray,
+    *,
+    cache_dir: str | Path,
+    verbose: bool = False,
+) -> dict[str, bool]:
+    """Derive directional final caches by filtering an exact legacy superset.
+
+    This operation never opens a TNG snapshot.  Cache identity is still based
+    on the exact query IDs, snapshot, base path, particle schema, and membership
+    mode, so a missing or invalid legacy cache simply leaves the normal scanner
+    to rebuild the requested product.
+    """
+
+    targets = np.unique(np.asarray(tracer_ids, dtype=np.uint64))
+    superset = np.unique(np.asarray(superset_tracer_ids, dtype=np.uint64))
+    status = {"tracer_parent": False, "parent_records": False}
+    if not len(targets) or np.array_equal(targets, superset):
+        return status
+    if np.any(~_subset_mask(targets, superset)):
+        raise ValueError("Directional tracer query must be a subset of the legacy query")
+
+    root = Path(cache_dir)
+    tracer_root = root / "tracer"
+    particle_root = root / "particles"
+    old_map_fingerprint = _fingerprint("tracer_parent_map", snap, superset, str(base_path))
+    new_map_fingerprint = _fingerprint("tracer_parent_map", snap, targets, str(base_path))
+    old_map_path = tracer_root / f"tracer_parent_map_{old_map_fingerprint}.npz"
+    new_map_path = tracer_root / f"tracer_parent_map_{new_map_fingerprint}.npz"
+    # A completed directional map means this one-time migration has already
+    # run (or the normal scanner has finished).  Avoid reloading the much
+    # larger legacy map during every subsequent analysis.
+    if new_map_path.is_file():
+        return status
+    old_mapping = _load_tracer_parent_final(old_map_path)
+    if old_mapping is None:
+        return status
+
+    keep = _subset_mask(old_mapping["tracer_ids"], targets)
+    new_mapping = {key: values[keep] for key, values in old_mapping.items()}
+
+    old_parent_ids = np.unique(np.asarray(old_mapping["parent_ids"], dtype=np.uint64))
+    new_parent_ids = np.unique(np.asarray(new_mapping["parent_ids"], dtype=np.uint64))
+    if len(new_parent_ids):
+        membership_mode = "subfind-offsets-v1"
+        old_record_fingerprint = _fingerprint(
+            "parent_records",
+            snap,
+            old_parent_ids,
+            f"{base_path}|particle-index-v2|{membership_mode}",
+        )
+        new_record_fingerprint = _fingerprint(
+            "parent_records",
+            snap,
+            new_parent_ids,
+            f"{base_path}|particle-index-v2|{membership_mode}",
+        )
+        old_record_path = particle_root / f"parent_records_{old_record_fingerprint}.npz"
+        new_record_path = particle_root / f"parent_records_{new_record_fingerprint}.npz"
+        if not new_record_path.is_file():
+            old_records = _load_parent_records_final(old_record_path)
+            if old_records is not None:
+                keep = _subset_mask(old_records["particle_ids"], new_parent_ids)
+                new_records = {key: values[keep] for key, values in old_records.items()}
+                _atomic_save_arrays(new_record_path, new_records)
+                status["parent_records"] = True
+                if verbose:
+                    print(
+                        f"[cache migrate snap={snap:03d}] parent records "
+                        f"{len(old_records['particle_ids'])}→{len(new_records['particle_ids'])}",
+                        flush=True,
+                    )
+
+    # Publish the directional map last.  If the process is interrupted while
+    # writing parent records, the next run will retry the migration instead of
+    # treating a half-complete product pair as finished.
+    _atomic_save_arrays(new_map_path, new_mapping)
+    status["tracer_parent"] = True
+    if verbose:
+        print(
+            f"[cache migrate snap={snap:03d}] tracer->parent "
+            f"{len(old_mapping['tracer_ids'])}→{len(new_mapping['tracer_ids'])}",
+            flush=True,
+        )
+    return status
+
+
 def _merge_grouped(results: list[dict[int, np.ndarray]]) -> dict[int, np.ndarray]:
     """Merge chunk-local label groups into unique full-snapshot arrays."""
 

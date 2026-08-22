@@ -314,6 +314,7 @@ $(\dot M_{\rm stay,out},\dot M_{\rm recycled,out},\dot M_{\rm other,out})$。
 - tracer 扫描沿用 1.8 的快照内分块策略：每个 HDF5 chunk 是一个独立任务，默认使用 64 个进程；snap94/95 的 `ParentID→TracerID`、进入事件 snap90--95 与离开事件 snap94--99 的 `TracerID→ParentID` 和 parent 粒子记录查询均采用同一调度；
 - 每个 tracer/particle chunk 单独原子缓存，任务中断后只重算尚未完成的 chunk；完整快照结果另存为合并缓存；
 - 合并后的 `TracerID→ParentID` 与 parent 粒子记录在内存中保持为按 ID 排序的 NumPy 列式数组，避免缓存命中后膨胀为千万级 Python 嵌套字典；
+- 若已存在旧版“进入∪离开”合并查询的最终缓存，则通过精确 fingerprint 识别该上集，直接裁剪生成新的方向窗口 `TracerID→ParentID` 和 parent-record 缓存，不重新读取 TNG snapshot；仅在旧最终缓存缺失或损坏时回退到 chunk 扫描；
 - parent 粒子记录同时保存其在对应粒子类型中的全局索引，并使用 TNG 官方 `Subhalo/SnapByType` offsets 判定 Subfind 绑定；由此严格区分主祖子晕、同 FoF 卫星、其他星系和 `unbound`，不能用空间位置代替成员关系；
 - groupcat 的 `GroupFirstSub`、`GroupNsubs`、`SubhaloLenType` 及 MPB 所需的子晕字段按快照一次读取，并缓存为 `data/interim/cache/catalogues/*.npz`；
 - 默认使用 1 个 worker 构建逐晕状态，避免多个大 FoF 同时驻留；tracer 阶段仍独立使用 64 核；

@@ -20,7 +20,7 @@ from src.io.catalog import _normalise_catalogue, load_subhalo_particle_offsets, 
 from src.io.sampling import _select_candidates
 from src.io.results import _save_events
 from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
-from src.io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
+from src.io.tracer import _fingerprint, lookup_parent_records, reuse_parent_product_subset_caches, scan_parent_to_tracer, scan_tracer_parent_map
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
@@ -266,6 +266,82 @@ def test_sampling_is_stable_after_subfind_sort() -> None:
     assert [row["subfind_id_z99"] for row in first] == [row["subfind_id_z99"] for row in second]
 
 
+def test_directional_caches_are_derived_from_legacy_superset(tmp_path: Path) -> None:
+    """A complete legacy cache avoids every raw snapshot read."""
+
+    base_path = str(tmp_path / "snapshot-does-not-exist")
+    cache_root = tmp_path / "cache"
+    tracer_root = cache_root / "tracer"
+    particle_root = cache_root / "particles"
+    tracer_root.mkdir(parents=True)
+    particle_root.mkdir(parents=True)
+    snap = 90
+    legacy_tracers = np.array([1, 2, 3], dtype=np.uint64)
+    directional_tracers = np.array([1, 3], dtype=np.uint64)
+    legacy_parents = np.array([10, 20, 30], dtype=np.uint64)
+
+    legacy_map_fingerprint = _fingerprint("tracer_parent_map", snap, legacy_tracers, base_path)
+    legacy_map_path = tracer_root / f"tracer_parent_map_{legacy_map_fingerprint}.npz"
+    # Deliberately unsorted to verify that migration validates and normalizes
+    # legacy final products before slicing them.
+    np.savez(
+        legacy_map_path,
+        tracer_ids=np.array([3, 1, 2], dtype=np.uint64),
+        parent_ids=np.array([30, 10, 20], dtype=np.uint64),
+    )
+    membership_mode = "subfind-offsets-v1"
+    legacy_record_fingerprint = _fingerprint(
+        "parent_records",
+        snap,
+        legacy_parents,
+        f"{base_path}|particle-index-v2|{membership_mode}",
+    )
+    legacy_record_path = particle_root / f"parent_records_{legacy_record_fingerprint}.npz"
+    np.savez(
+        legacy_record_path,
+        particle_ids=legacy_parents,
+        particle_type=np.zeros(3, dtype=np.int8),
+        particle_index=np.arange(3, dtype=np.uint64),
+        bound_subhalo_id=np.array([0, 1, 2], dtype=np.int64),
+        bound_group_id=np.array([4, 5, 6], dtype=np.int64),
+        coordinates=np.arange(9, dtype=float).reshape(3, 3),
+        sfr=np.zeros(3),
+        internal_energy=np.full(3, 100.0),
+        electron_abundance=np.full(3, 0.1),
+        formation_time=np.full(3, np.nan),
+    )
+
+    status = reuse_parent_product_subset_caches(
+        base_path,
+        snap,
+        directional_tracers,
+        legacy_tracers,
+        cache_dir=cache_root,
+    )
+    assert status == {"tracer_parent": True, "parent_records": True}
+    # Both public readers must now return before attempting to locate the
+    # intentionally nonexistent raw snapshot directory.
+    mapping = scan_tracer_parent_map(
+        base_path,
+        snap,
+        directional_tracers,
+        cache_dir=tracer_root,
+        columnar=True,
+    )
+    np.testing.assert_array_equal(mapping["tracer_ids"], directional_tracers)
+    np.testing.assert_array_equal(mapping["parent_ids"], np.array([10, 30], dtype=np.uint64))
+    records = lookup_parent_records(
+        base_path,
+        snap,
+        mapping["parent_ids"],
+        cache_dir=particle_root,
+        membership_catalogue={},
+        subhalo_offsets={},
+    )
+    np.testing.assert_array_equal(records["particle_ids"], np.array([10, 30], dtype=np.uint64))
+    np.testing.assert_array_equal(records["bound_group_id"], np.array([4, 6], dtype=np.int64))
+
+
 def _synthetic_event_inputs():
     """Create gas histories covering every resolved event class."""
 
@@ -412,8 +488,9 @@ def test_parent_products_use_directional_history_windows(monkeypatch, tmp_path: 
 
     calls = {}
 
-    def fake_worker(base_path, snap, all_events, cache_dir, block_size, max_workers, parallel_backend, verbose):
+    def fake_worker(base_path, snap, all_events, legacy_events, cache_dir, block_size, max_workers, parallel_backend, verbose):
         calls[snap] = np.asarray(all_events, dtype=np.uint64)
+        np.testing.assert_array_equal(legacy_events, np.array([1, 3, 4], dtype=np.uint64))
         return snap, {"tracer_ids": calls[snap], "parent_ids": calls[snap]}, {"particle_ids": calls[snap]}
 
     monkeypatch.setattr(pipeline_module, "_parent_product_worker", fake_worker)

@@ -13,7 +13,7 @@ import numpy as np
 from ..io.sampling import load_or_build_sample
 from ..io.catalog import load_catalogue_cache, load_subhalo_particle_offsets
 from ..io.state import load_state_snapshot, prepare_halo_states
-from ..io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
+from ..io.tracer import lookup_parent_records, reuse_parent_product_subset_caches, scan_parent_to_tracer, scan_tracer_parent_map
 from ..physics.feedback import compute_agn_strength
 from ..physics.sam_cooling import compute_isothermal_sam_cooling
 from ..utils.arrays import records_to_arrays
@@ -140,6 +140,7 @@ def _parent_product_worker(
     base_path: str,
     snap: int,
     all_events: np.ndarray,
+    legacy_events: np.ndarray,
     cache_dir: str | Path,
     block_size: int,
     max_workers: int,
@@ -150,6 +151,14 @@ def _parent_product_worker(
 
     tracer_cache = Path(cache_dir) / "tracer"
     particle_cache = Path(cache_dir) / "particles"
+    reuse_parent_product_subset_caches(
+        base_path,
+        snap,
+        all_events,
+        legacy_events,
+        cache_dir=cache_dir,
+        verbose=verbose,
+    )
     mapping = scan_tracer_parent_map(
         base_path,
         snap,
@@ -204,6 +213,7 @@ def _parent_products(
     exit_parts = [np.asarray(values, dtype=np.uint64) for values in exit_ids if len(values)]
     enter_events = np.unique(np.concatenate(enter_parts)) if enter_parts else np.empty(0, dtype=np.uint64)
     exit_events = np.unique(np.concatenate(exit_parts)) if exit_parts else np.empty(0, dtype=np.uint64)
+    legacy_events = np.unique(np.concatenate((enter_events, exit_events)))
     parent_maps: dict[int, dict[str, np.ndarray]] = {}
     records: dict[int, dict[str, np.ndarray]] = {}
     if not len(enter_events) and not len(exit_events):
@@ -231,6 +241,7 @@ def _parent_products(
             config.base_path,
             snap,
             all_events,
+            legacy_events,
             cache_dir,
             config.tracer_read_block_size,
             config.tracer_workers,
