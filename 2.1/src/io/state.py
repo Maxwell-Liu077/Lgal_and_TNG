@@ -173,6 +173,10 @@ def build_snapshot_state(
     r_group = periodic_radius(gas["Coordinates"], group_center, box)
     r_subhalo = periodic_radius(gas["Coordinates"], subhalo_center, box)
     r200 = float(branch["r200c_ckpc_h"])
+    # The black-hole mass is read from the MPB/group catalogue layer and is
+    # carried through unchanged for the AGN endpoint calculation.  Keep the
+    # value on the state record even when TNG does not provide it (NaN).
+    m_bh_msun = _safe_float(branch.get("m_bh_msun"))
     inner = r_subhalo < config.central_rfrac * r200
     in_halo = r_group < r200
     central_cold = inner & cold & diffuse
@@ -195,7 +199,7 @@ def build_snapshot_state(
         "m200c_msun": float(branch["m200c_msun"]),
         "mstar_msun": float(branch["mstar_msun"]),
         "vmax_km_s": float(branch.get("vmax_km_s", np.nan)),
-        "m_bh_msun": m_bh,
+        "m_bh_msun": m_bh_msun,
         "is_main_central": bool(branch.get("is_main_central", False)),
         "central_gas_ids": central_gas,
         "satellite_gas_ids": satellite_gas,
@@ -406,9 +410,12 @@ def prepare_halo_states(
             _save_state(path, states)
         if verbose:
             status = "rejected" if error is not None or states is None else "computed"
+            detail = ""
+            if error is not None:
+                detail = f" reason={type(error).__name__}: {error}"
             print(
                 f"[states] {status} {sequence}/{len(pending)} "
-                f"sub={record['subfind_id_z99']}",
+                f"sub={record['subfind_id_z99']}{detail}",
                 flush=True,
             )
 

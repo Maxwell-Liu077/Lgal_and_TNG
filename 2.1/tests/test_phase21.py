@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ from src.analysis.events import classify_halo_events
 from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics
 from src.io.catalog import _normalise_catalogue, subfind_counts
 from src.io.sampling import _select_candidates
+from src.io.state import build_snapshot_state
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
@@ -59,6 +61,57 @@ def test_snapshot_catalogue_cache_reproduces_subfind_counts() -> None:
         "central_star_count": 4,
         "satellite_star_count": 2,
     }
+
+
+def test_snapshot_state_keeps_mbh_from_branch(monkeypatch) -> None:
+    """A valid particle read must not be rejected by the BH state field."""
+
+    gas = {
+        "ParticleIDs": np.array([1, 2, 3], dtype=np.uint64),
+        "Coordinates": np.array([[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [20.0, 0.0, 0.0]]),
+        "Masses": np.ones(3),
+        "StarFormationRate": np.array([1.0, 0.0, 0.0]),
+        "InternalEnergy": np.array([100.0, 100.0, 20_000.0]),
+        "ElectronAbundance": np.full(3, 0.1),
+        "GFM_Metallicity": np.full(3, 0.01),
+    }
+    stars = {
+        "ParticleIDs": np.array([10], dtype=np.uint64),
+        "Coordinates": np.array([[1.0, 0.0, 0.0]]),
+        "GFM_StellarFormationTime": np.array([1.0]),
+    }
+
+    class Snapshot:
+        @staticmethod
+        def loadHalo(base_path, snap, group_id, particle_type, fields):
+            return gas if particle_type == "gas" else stars
+
+    monkeypatch.setitem(sys.modules, "illustris_python", types.SimpleNamespace(snapshot=Snapshot))
+    catalogue = _normalise_catalogue(
+        {"GroupFirstSub": np.array([0]), "GroupNsubs": np.array([2])},
+        {
+            "SubhaloFlag": np.array([True, True]),
+            "SubhaloMassInRadType": np.ones((2, 6)),
+            "SubhaloLenType": np.array([[2, 0, 0, 0, 1, 0], [1, 0, 0, 0, 0, 0]]),
+            "SubhaloVmax": np.array([200.0, 100.0]),
+            "SubhaloBHMass": np.array([1.0, 0.0]),
+        },
+    )
+    branch = {
+        "snap": 94,
+        "group_id": 0,
+        "subfind_id": 0,
+        "group_center_ckpc_h": [0.0, 0.0, 0.0],
+        "subhalo_center_ckpc_h": [0.0, 0.0, 0.0],
+        "r200c_ckpc_h": 100.0,
+        "m200c_msun": 1.0e12,
+        "mstar_msun": 1.0e10,
+        "m_bh_msun": 1.0e10,
+    }
+    state = build_snapshot_state(
+        "/unused", branch, {"BoxSize": 1000.0, "Time": 0.5}, Phase21Config(), catalogue=catalogue
+    )
+    assert state["m_bh_msun"] == branch["m_bh_msun"]
 
 
 def test_sampling_is_stable_after_subfind_sort() -> None:
