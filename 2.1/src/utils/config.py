@@ -43,7 +43,7 @@ class Phase21Config:
     # Four shared-memory workers overlap independent halo reads while using a
     # single snapshot-level catalogue cache.  Set workers=1/backend=serial on
     # filesystems where concurrent HDF5 reads are undesirable.
-    state_workers: int = 4
+    state_workers: int = 1
     state_parallel_backend: str = "thread"
     cache_schema_version: int = 1
 
