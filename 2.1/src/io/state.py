@@ -14,7 +14,6 @@ from ..utils.config import Phase21Config
 
 
 GAS_FIELDS = ["ParticleIDs", "Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"]
-STAR_FIELDS = ["ParticleIDs"]
 PROTON_MASS_G = 1.67262192369e-24
 BOLTZMANN_CGS = 1.380649e-16
 
@@ -98,15 +97,29 @@ def _subfind_counts(
     }
 
 
-def _split_ids(ids: np.ndarray, central_count: int, satellite_count: int) -> tuple[np.ndarray, np.ndarray]:
-    """Split FoF-ordered particle IDs using Subfind counts."""
+def _tracked_subhalo_layout(
+    catalogue: dict[str, np.ndarray],
+    group_id: int,
+    subfind_id: int,
+    particle_type: int,
+) -> tuple[int, int, int]:
+    """Return tracked-subhalo start/count and total bound count in one FoF."""
 
-    if int(central_count) < 0 or int(satellite_count) < 0:
+    first = int(np.asarray(catalogue["GroupFirstSub"], dtype=np.int64)[group_id])
+    nsubs = int(np.asarray(catalogue["GroupNsubs"], dtype=np.int64)[group_id])
+    lengths = np.asarray(catalogue["SubhaloLenType"], dtype=np.int64)
+    if first < 0 or nsubs < 1 or subfind_id < first or subfind_id >= first + nsubs:
+        raise ValueError(
+            f"Tracked subhalo {subfind_id} is not a member of FoF group {group_id}"
+        )
+    member_lengths = lengths[first:first + nsubs, particle_type]
+    if np.any(member_lengths < 0):
         raise ValueError("Subfind particle counts must be non-negative")
-    stop = int(central_count) + int(satellite_count)
-    if stop > len(ids):
-        raise ValueError("Subfind counts exceed loaded FoF particle count")
-    return ids[:central_count].copy(), ids[central_count:stop].copy()
+    relative = subfind_id - first
+    start = int(member_lengths[:relative].sum())
+    count = int(member_lengths[relative])
+    total = int(member_lengths.sum())
+    return start, count, total
 
 
 def _empty_like(data: dict, fields: list[str]) -> dict[str, np.ndarray]:
@@ -154,18 +167,30 @@ def build_snapshot_state(
     snap = int(branch["snap"])
     group_id = int(branch["group_id"])
     gas = _empty_like(il.snapshot.loadHalo(base_path, snap, group_id, "gas", fields=GAS_FIELDS), GAS_FIELDS)
-    stars = _empty_like(il.snapshot.loadHalo(base_path, snap, group_id, "stars", fields=STAR_FIELDS), STAR_FIELDS)
-    counts = _subfind_counts(base_path, snap, group_id, catalogue)
-    central_gas, satellite_gas = _split_ids(_ids(gas), counts["central_gas_count"], counts["satellite_gas_count"])
-    central_stars, satellite_stars = _split_ids(_ids(stars), counts["central_star_count"], counts["satellite_star_count"])
+    subfind_id = int(branch["subfind_id"])
+    if catalogue is None:
+        halos = il.groupcat.loadHalos(base_path, snap, fields=["GroupFirstSub", "GroupNsubs"])
+        subhalos = il.groupcat.loadSubhalos(base_path, snap, fields=["SubhaloLenType"])
+        catalogue = {
+            "GroupFirstSub": np.asarray(halos["GroupFirstSub"], dtype=np.int64),
+            "GroupNsubs": np.asarray(halos["GroupNsubs"], dtype=np.int64),
+            "SubhaloLenType": np.asarray(
+                subhalos["SubhaloLenType"] if isinstance(subhalos, dict) else subhalos,
+                dtype=np.int64,
+            ),
+        }
+    gas_start, gas_count, gas_total_bound = _tracked_subhalo_layout(
+        catalogue, group_id, subfind_id, 0
+    )
     gas_ids = _ids(gas)
     # ``loadHalo`` follows Subfind ordering: central, satellites, then FoF
     # fuzz.  Constructing this mask by position is exact and avoids an
     # extremely expensive np.isin over cluster-sized particle arrays.
     diffuse = np.ones(len(gas_ids), dtype=bool)
-    satellite_start = counts["central_gas_count"]
-    satellite_stop = satellite_start + counts["satellite_gas_count"]
-    diffuse[satellite_start:satellite_stop] = False
+    # Exclude every bound subhalo except the tracked MPB object.  FoF fuzz is
+    # retained as diffuse gas, matching the central-reservoir definition.
+    diffuse[:gas_total_bound] = False
+    diffuse[gas_start:gas_start + gas_count] = True
     mass = np.asarray(gas["Masses"], dtype=float) * 1.0e10 / config.h
     temperature = internal_energy_to_temperature(gas["InternalEnergy"], gas["ElectronAbundance"])
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -194,7 +219,7 @@ def build_snapshot_state(
     return {
         "snap": snap,
         "group_id": group_id,
-        "subfind_id": int(branch["subfind_id"]),
+        "subfind_id": subfind_id,
         "group_center_ckpc_h": group_center,
         "subhalo_center_ckpc_h": subhalo_center,
         "r200c_ckpc_h": r200,
@@ -204,11 +229,14 @@ def build_snapshot_state(
         "vmax_km_s": float(branch.get("vmax_km_s", np.nan)),
         "m_bh_msun": m_bh_msun,
         "is_main_central": bool(branch.get("is_main_central", False)),
-        "central_gas_ids": central_gas,
-        "satellite_gas_ids": satellite_gas,
+        # Full membership arrays are deliberately not cached.  Event parents
+        # are classified exactly from their global particle index and the TNG
+        # Subhalo/SnapByType offsets, which avoids multi-GiB per-halo caches.
+        "central_gas_ids": np.empty(0, dtype=np.uint64),
+        "satellite_gas_ids": np.empty(0, dtype=np.uint64),
         "other_gas_ids": np.empty(0, dtype=np.uint64),
-        "central_star_ids": central_stars,
-        "satellite_star_ids": satellite_stars,
+        "central_star_ids": np.empty(0, dtype=np.uint64),
+        "satellite_star_ids": np.empty(0, dtype=np.uint64),
         "other_star_ids": np.empty(0, dtype=np.uint64),
         # Only the two event anchors consume the complete cold-library IDs.
         # Historical classifications use the selected tracer parents instead.

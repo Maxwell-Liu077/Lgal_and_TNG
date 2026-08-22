@@ -45,14 +45,14 @@ class Phase21Config:
     # filesystems where concurrent HDF5 reads are undesirable.
     state_workers: int = 1
     state_parallel_backend: str = "thread"
-    cache_schema_version: int = 1
+    cache_schema_version: int = 2
 
     # These strings are part of the cache contract.  Keeping them in the
     # configuration makes a cache invalid when a scientific definition is
     # changed, rather than silently reusing a result made with another rule.
-    state_definition_version: str = "host-radial-phase-carrier-v1"
+    state_definition_version: str = "host-radial-phase-carrier-offset-binding-v2"
     other_rule_version: str = "exclude-from-valid-mother-retain-total-v1"
-    classification_rule_version: str = "literal-readme-6.2-v1"
+    classification_rule_version: str = "literal-readme-6.2-anchor-consistent-v2"
 
     def __post_init__(self) -> None:
         """Reject configurations that violate the experiment contract."""

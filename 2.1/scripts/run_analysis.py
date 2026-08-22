@@ -53,8 +53,9 @@ def main(argv: list[str] | None = None) -> int:
         figure_dir = args.figure_dir
         figure_dir.mkdir(parents=True, exist_ok=True)
         plot_agn_cooling(result["agn_quartile_statistics"], halo_results=result["halo_results"], save_path=figure_dir / "phase21_agn_quartile_cooling.png")
-        plot_composition(result["composition_statistics"], save_path=figure_dir / "phase21_composition.png")
-        plot_feedback_before_accretion(result["normalized_statistics"], save_path=figure_dir / "phase21_feedback_before_accretion.png")
+        plot_composition(result["composition_statistics"], direction="in", save_path=figure_dir / "phase21_supply_composition.png")
+        plot_composition(result["composition_statistics"], direction="out", save_path=figure_dir / "phase21_feedback_composition.png")
+        plot_feedback_before_accretion(result["normalized_statistics"], halo_results=result["halo_results"], save_path=figure_dir / "phase21_feedback_before_accretion.png")
     except ImportError as exc:
         if not args.quiet:
             print(f"[plotting] skipped: {exc}")

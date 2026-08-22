@@ -190,6 +190,48 @@ def load_catalogue_cache(
     return output
 
 
+def load_subhalo_particle_offsets(
+    base_path: str | Path,
+    snap: int,
+    *,
+    particle_types: tuple[int, ...] = (0, 4, 5),
+) -> dict[int, np.ndarray]:
+    """Load global snapshot offsets used to identify bound subhalos.
+
+    TNG stores the exact first global particle index of every subhalo in the
+    separate offsets file.  Reading only the requested particle-type columns
+    lets the event layer distinguish another bound galaxy from genuinely
+    unbound FoF/outer fuzz without constructing a full ParticleID catalogue.
+    """
+
+    try:
+        import h5py
+    except ImportError as exc:
+        raise ImportError("h5py is required for TNG subhalo offsets") from exc
+
+    try:
+        from illustris_python.groupcat import offsetPath
+
+        path = Path(offsetPath(str(base_path), int(snap)))
+    except (ImportError, AttributeError):
+        path = Path(base_path).resolve().parent / "postprocessing" / "offsets" / f"offsets_{int(snap):03d}.hdf5"
+    if not path.is_file():
+        raise FileNotFoundError(f"Missing TNG offsets file for snap={int(snap)}: {path}")
+
+    output: dict[int, np.ndarray] = {}
+    with h5py.File(path, "r") as handle:
+        if "Subhalo/SnapByType" not in handle:
+            raise KeyError(f"Subhalo/SnapByType missing from {path}")
+        dataset = handle["Subhalo/SnapByType"]
+        if dataset.ndim != 2 or dataset.shape[1] < 6:
+            raise ValueError(f"Invalid Subhalo/SnapByType shape in {path}")
+        for particle_type in particle_types:
+            if particle_type < 0 or particle_type >= dataset.shape[1]:
+                raise ValueError(f"Invalid particle type {particle_type}")
+            output[int(particle_type)] = np.asarray(dataset[:, particle_type], dtype=np.uint64)
+    return output
+
+
 def subfind_counts(catalogue: dict[str, np.ndarray], group_id: int) -> dict[str, int]:
     """Return central/satellite gas/star counts from a cached catalogue."""
 

@@ -93,10 +93,13 @@ def compute_agn_quartile_statistics(halo_results: dict[str, np.ndarray], config:
     p16 = np.full_like(medians, np.nan)
     p84 = np.full_like(medians, np.nan)
     counts = np.zeros_like(medians, dtype=np.int32)
+    assigned = np.zeros_like(medians, dtype=np.int32)
     for q in range(1, 5):
         for index in range(len(centers)):
-            p16[q - 1, index], medians[q - 1, index], p84[q - 1, index], counts[q - 1, index] = _percentiles(values[(bins == index) & (quartiles == q)])
-    output.update({"median": medians, "p16": p16, "p84": p84, "n_finite": counts})
+            mask = (bins == index) & (quartiles == q)
+            assigned[q - 1, index] = np.count_nonzero(mask)
+            p16[q - 1, index], medians[q - 1, index], p84[q - 1, index], counts[q - 1, index] = _percentiles(values[mask])
+    output.update({"median": medians, "p16": p16, "p84": p84, "n_finite": counts, "n_assigned": assigned})
     return output
 
 
@@ -115,11 +118,32 @@ def compute_composition_statistics(halo_results: dict[str, np.ndarray], config: 
             for index in range(n_bins):
                 selected = values[bins == index]
                 totals[component, index] = np.nansum(selected)
-        denominator = totals.sum(axis=0)
+        component_total = totals.sum(axis=0)
+        total_field = f"rate_total_{prefix}_msun_per_yr"
+        denominator = np.zeros(n_bins, dtype=float)
+        total_values = np.asarray(halo_results.get(total_field, np.full(len(bins), np.nan)), dtype=float)
+        for index in range(n_bins):
+            selected = total_values[bins == index]
+            denominator[index] = np.nansum(selected) if np.any(np.isfinite(selected)) else component_total[index]
+        closure_error = denominator - component_total
+        tolerance = 1.0e-12 * np.maximum(1.0, np.abs(denominator))
+        if np.any(np.abs(closure_error) > tolerance):
+            raise ValueError(f"{prefix} composition does not close to rate_total_{prefix}")
         fractions = np.full_like(totals, np.nan)
         valid = denominator > 0
         fractions[:, valid] = totals[:, valid] / denominator[valid]
         output[f"{prefix}_component_rates"] = totals
         output[f"{prefix}_component_fractions"] = fractions
         output[f"{prefix}_total"] = denominator
+        output[f"{prefix}_closure_error"] = closure_error
+        count_field = f"n_total_{prefix}"
+        counts = np.asarray(halo_results.get(count_field, np.zeros(len(bins))), dtype=float)
+        output[f"{prefix}_event_count"] = np.asarray(
+            [np.nansum(counts[bins == index]) for index in range(n_bins)],
+            dtype=np.int64,
+        )
+        output[f"{prefix}_halo_count_with_events"] = np.asarray(
+            [np.count_nonzero(np.isfinite(counts[bins == index]) & (counts[bins == index] > 0)) for index in range(n_bins)],
+            dtype=np.int32,
+        )
     return output

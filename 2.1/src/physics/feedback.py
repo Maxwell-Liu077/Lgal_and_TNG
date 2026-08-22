@@ -29,14 +29,17 @@ def compute_agn_strength(
     except (TypeError, ValueError):
         return {"agn_strength": np.nan, "A_SAM": np.nan, "mdot_bh_msun_per_yr": np.nan, "mdot_heat_h15_msun_per_yr": np.nan, "t_dyn_gyr": np.nan}
     values = (m_hot_msun, m_bh_msun, r200c_pkpc, v200c_km_s)
-    if any(not np.isfinite(value) for value in values) or m_hot_msun < 0 or m_bh_msun < 0 or r200c_pkpc <= 0 or v200c_km_s <= 0:
+    if any(not np.isfinite(value) for value in values) or m_hot_msun <= 0 or m_bh_msun < 0 or r200c_pkpc <= 0 or v200c_km_s <= 0:
         return {"agn_strength": np.nan, "A_SAM": np.nan, "mdot_bh_msun_per_yr": np.nan, "mdot_heat_h15_msun_per_yr": np.nan, "t_dyn_gyr": np.nan}
     mdot_bh = K_AGN_MSUN_PER_YR * (m_hot_msun / 1.0e11) * (m_bh_msun / 1.0e8)
     power = RADIO_EFFICIENCY * mdot_bh * MSUN_G / SECONDS_PER_YEAR * LIGHT_SPEED_CM_S**2
     mdot_heat = 2.0 * power / (v200c_km_s * 1.0e5) ** 2 / MSUN_G * SECONDS_PER_YEAR
     t_dyn_gyr = r200c_pkpc * 3.085677581491367e21 / (v200c_km_s * 1.0e5) / (1.0e9 * SECONDS_PER_YEAR)
-    denominator = m_hot_msun / (t_dyn_gyr * 1.0e9) if m_hot_msun > 0 else 0.0
-    strength = -np.inf if mdot_heat == 0 or denominator == 0 else float(np.log10(mdot_heat / denominator))
+    denominator = m_hot_msun / (t_dyn_gyr * 1.0e9)
+    # A zero BH mass is the documented physical -infinity limit.  A zero hot
+    # reservoir, by contrast, makes both numerator and denominator vanish and
+    # is undefined; it is rejected above as NaN.
+    strength = -np.inf if m_bh_msun == 0 else float(np.log10(mdot_heat / denominator))
     return {
         "agn_strength": strength,
         "A_SAM": strength,

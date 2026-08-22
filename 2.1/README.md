@@ -313,23 +313,24 @@ $(\dot M_{\rm stay,out},\dot M_{\rm recycled,out},\dot M_{\rm other,out})$。
 
 - tracer 扫描沿用 1.8 的快照内分块策略：每个 HDF5 chunk 是一个独立任务，默认使用 64 个进程；snap94/95 的 `ParentID→TracerID`、snap90--99 的 `TracerID→ParentID` 和 parent 粒子记录查询均采用同一调度；
 - 每个 tracer/particle chunk 单独原子缓存，任务中断后只重算尚未完成的 chunk；完整快照结果另存为合并缓存；
+- parent 粒子记录同时保存其在对应粒子类型中的全局索引，并使用 TNG 官方 `Subhalo/SnapByType` offsets 判定 Subfind 绑定；由此严格区分主祖子晕、同 FoF 卫星、其他星系和 `unbound`，不能用空间位置代替成员关系；
 - groupcat 的 `GroupFirstSub`、`GroupNsubs`、`SubhaloLenType` 及 MPB 所需的子晕字段按快照一次读取，并缓存为 `data/interim/cache/catalogues/*.npz`；
 - 默认使用 1 个 worker 构建逐晕状态，避免多个大 FoF 同时驻留；tracer 阶段仍独立使用 64 核；
-- 星体状态构建只读取实际需要的 `ParticleIDs`；
+- 逐晕 state 缓存不再保存完整中央/卫星 gas 或 star ParticleID 成员数组；只保存锚点 `central_cold_ids`、几何量和物理标量，事件载体及成员关系由所选 parent 记录和官方 offsets 恢复；
 - 样本、90--99 MPB、逐快照状态、tracer-parent 映射和事件账本分别缓存；
 - fingerprint 包含模拟名、snap范围、事件锚点、质量箱、随机种子、状态定义、`other`规则、分类规则、tracer权重和schema版本；
 - 合法零结果写入缓存，读取失败不能写成零；所有缓存采用原子写入。
 
 ## 9. 可视化
 
-1. 主图：按 $\mathcal A_{\rm H15}$ 四分位的四条 $r_{\rm cool}/R_{200c}$ 中位线，副图：围绕中位数的 1 $\sigma$ 离散度；
+1. 主图：按 $\mathcal A_{\rm SAM}$ 四分位的四条 $r_{\rm cool}/R_{200c}$ 中位线；副图以零为中位数基线，使用非对称误差棒表示 $P_{16}-P_{50}$ 与 $P_{84}-P_{50}$ 的 1 $\sigma$ 离散度；
 2. 中央冷库总供给来源：$\dot M_{\rm first,in}^{\rm eff}$、$\dot M_{\rm recycled,in}^{\rm eff}$、$\dot M_{\rm stay,in}$ 和 `other` 的 100% 堆叠柱形图；
 3. 中央冷库总反馈作用去向：$\dot M_{\rm stay,out}$、$\dot M_{\rm recycled,out}$ 和 `other` 的 100% 堆叠柱形图；
-4. 主图：反馈前吸积率估计 $\dot M_{\rm pf,in}$ 与 $\dot M_{\rm cool,iso}$ 的中位线；副图展示围绕中位数的 1 $\sigma$ 离散度，需要采用两种归一化方式：$M_{\rm hot}$ 和 $M_{\rm stellar}$。
+4. 主图：反馈前吸积率估计 $\dot M_{\rm pf,in}$ 与 $\dot M_{\rm cool,iso}$ 的中位线；副图同样以零为中位数基线，用非对称误差棒展示 $P_{16}-P_{50}$ 与 $P_{84}-P_{50}$，并采用两种归一化方式：$M_{\rm hot}$ 和 $M_{\rm stellar}$。
 
 数值产品包括样本/MPB JSON、逐晕 NPZ/CSV、逐快照事件 HDF5、分箱和AGN四分位
 NPZ，以及包含定义、有效数、`other`比例和闭合残差的元数据 JSON。事件 HDF5
-同时保存 `TracerID`、事件方向、锚点/源/目标状态、完整状态序列和缺失掩码。
+同时保存 `TracerID`、事件方向、锚点/源/目标状态、事件所需的完整状态序列和缺失掩码：进入事件保存 snap90--95，离开事件保存 snap94--99。
 
 命令行入口为 `scripts/run_analysis.py`；可通过 `--base-path`、
 `--cooling-table-dir`、`--cache-dir`、`--output-dir`、`--figure-dir`、

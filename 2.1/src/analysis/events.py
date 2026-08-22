@@ -46,46 +46,63 @@ def classify_parent_state(record: dict[str, object], state: dict, header: dict, 
     """Assign the four orthogonal README state fields to one parent."""
 
     if state.get("unresolved_snapshot", False):
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "reason": str(state.get("unresolved_reason", "unresolved_snapshot"))}
+        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "resolved": False, "reason": str(state.get("unresolved_reason", "unresolved_snapshot"))}
     particle_type = int(record.get("particle_type", -1))
     particle_id = int(record.get("particle_id", -1))
     if particle_type == 5:
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "black_hole", "central_cold": False, "valid": False, "reason": "black_hole"}
-    if particle_type == 4:
+        carrier = "black_hole"
+    elif particle_type == 4:
         formation_time = float(record.get("formation_time", np.nan))
-        carrier = "wind" if np.isfinite(formation_time) and formation_time <= 0 else "star"
+        if not np.isfinite(formation_time):
+            return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "resolved": False, "reason": "missing_formation_time"}
+        carrier = "wind" if formation_time <= 0 else "star"
     elif particle_type == 0:
         carrier = "gas"
     else:
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "reason": "unknown_carrier"}
+        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "resolved": False, "reason": "unknown_carrier"}
     coordinates = np.asarray(record.get("coordinates", [np.nan, np.nan, np.nan]), dtype=float)
     if coordinates.shape != (3,) or not np.all(np.isfinite(coordinates)):
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "reason": "missing_coordinates"}
+        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "resolved": False, "reason": "missing_coordinates"}
     try:
         group_center = np.asarray(state["group_center_ckpc_h"], dtype=float)
         subhalo_center = np.asarray(state["subhalo_center_ckpc_h"], dtype=float)
         r200 = float(state["r200c_ckpc_h"])
         box = float(header["BoxSize"])
     except (KeyError, TypeError, ValueError):
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "reason": "missing_geometry"}
+        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "resolved": False, "reason": "missing_geometry"}
     if group_center.shape != (3,) or subhalo_center.shape != (3,) or not np.all(np.isfinite(group_center)) or not np.all(np.isfinite(subhalo_center)) or not np.isfinite(r200) or r200 <= 0 or not np.isfinite(box) or box <= 0:
-        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "reason": "missing_geometry"}
+        return {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": carrier, "central_cold": False, "valid": False, "resolved": False, "reason": "missing_geometry"}
     group_radius = float(periodic_radius(coordinates[None, :], group_center, box)[0])
     central_radius = float(periodic_radius(coordinates[None, :], subhalo_center, box)[0])
-    radial = "beyond_r200c" if group_radius >= r200 else ("inner" if central_radius < config.central_rfrac * r200 else "outer_halo")
-    suffix = "gas_ids" if particle_type == 0 else "star_ids"
-    if _contains_particle_id(state, f"central_{suffix}", particle_id):
-        host = "main_central"
-    elif _contains_particle_id(state, f"satellite_{suffix}", particle_id):
-        host = "satellite"
-    elif _contains_particle_id(state, f"other_{suffix}", particle_id):
-        host = "other_halo"
-    elif particle_type == 0:
-        # Full other-subhalo membership is not present in a local halo load;
-        # an unbound gas parent is therefore the conservative external class.
-        host = "unbound"
+    # README section 4.1 defines the central region first.  A tracked subhalo
+    # close to a FoF boundary must therefore remain ``inner`` when measured
+    # around SubhaloPos, even if its GroupPos distance exceeds R200c.
+    radial = "inner" if central_radius < config.central_rfrac * r200 else ("outer_halo" if group_radius < r200 else "beyond_r200c")
+    bound_subhalo = int(record.get("bound_subhalo_id", -2))
+    bound_group = int(record.get("bound_group_id", -2))
+    if bound_subhalo >= -1 and bound_group >= -1:
+        if bound_subhalo < 0:
+            host = "unbound"
+        elif bound_subhalo == int(state.get("subfind_id", -999999)):
+            host = "main_central"
+        elif bound_group == int(state.get("group_id", -999999)):
+            host = "satellite"
+        else:
+            host = "other_halo"
     else:
-        host = "other_halo"
+        # Backward-compatible fallback for synthetic records and old direct
+        # callers.  Production records always carry official offset binding.
+        suffix = "gas_ids" if particle_type == 0 else "star_ids"
+        if _contains_particle_id(state, f"central_{suffix}", particle_id):
+            host = "main_central"
+        elif _contains_particle_id(state, f"satellite_{suffix}", particle_id):
+            host = "satellite"
+        elif _contains_particle_id(state, f"other_{suffix}", particle_id):
+            host = "other_halo"
+        elif particle_type == 0:
+            host = "unbound"
+        else:
+            host = "other_halo"
     phase = "unresolved"
     if particle_type == 0:
         temperature = float(internal_energy_to_temperature(np.asarray([record.get("internal_energy", np.nan)]), np.asarray([record.get("electron_abundance", np.nan)]))[0])
@@ -94,10 +111,20 @@ def classify_parent_state(record: dict[str, object], state: dict, header: dict, 
             log_temperature = float(np.log10(temperature))
         if np.isfinite(log_temperature) and np.isfinite(sfr):
             phase = "cold" if sfr > 0 or (sfr <= 0 and log_temperature < config.cold_log10_temperature_max) else "hot"
-    central_cold = carrier == "gas" and host == "main_central" and radial == "inner" and phase == "cold"
+    # The anchor reservoir excludes other bound galaxies but retains diffuse
+    # unbound gas, so the history indicator must use the same definition.
+    central_cold = carrier == "gas" and host not in {"satellite", "other_halo", "unresolved"} and radial == "inner" and phase == "cold"
     valid = carrier == "gas" and host not in {"satellite", "other_halo", "unresolved"} and radial != "unresolved" and phase != "unresolved"
-    reason = "" if valid else (host if host in {"satellite", "other_halo", "unresolved"} else "invalid_phase")
-    return {"host_state": host, "radial_state": radial, "phase_state": phase, "carrier_state": carrier, "central_cold": bool(central_cold), "valid": bool(valid), "reason": reason}
+    if valid:
+        reason = ""
+    elif carrier != "gas":
+        reason = carrier
+    elif host in {"satellite", "other_halo", "unresolved"}:
+        reason = host
+    else:
+        reason = "unresolved_phase"
+    resolved = carrier != "unresolved" and host != "unresolved" and radial != "unresolved" and (carrier != "gas" or phase != "unresolved")
+    return {"host_state": host, "radial_state": radial, "phase_state": phase, "carrier_state": carrier, "central_cold": bool(central_cold), "valid": bool(valid), "resolved": bool(resolved), "reason": reason}
 
 
 def _state_sequence(tracer_id: int, snapshots: tuple[int, ...], parent_maps: dict[int, dict[int, int]], records: dict[int, dict[int, dict]], states: dict[int, dict], headers: dict[int, dict], config: Phase21Config) -> dict[int, dict]:
@@ -109,7 +136,7 @@ def _state_sequence(tracer_id: int, snapshots: tuple[int, ...], parent_maps: dic
         parent_id = snap_map.get(int(tracer_id))
         snap_records = records.get(snap, records.get(str(snap), {}))
         if parent_id is None or parent_id not in snap_records:
-            sequence[snap] = {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "reason": "unresolved"}
+            sequence[snap] = {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "resolved": False, "reason": "unresolved"}
             continue
         state = states[snap] if snap in states else states[str(snap)]
         header = headers[snap] if snap in headers else headers[str(snap)]
@@ -135,7 +162,11 @@ def classify_entering_tracer(tracer_id: int, sequence: dict[int, dict], config: 
     target = sequence.get(config.snap_event_cur)
     if target is None or not target.get("valid", False):
         return "other", str((target or {}).get("reason", "unresolved_target"))
+    if not target.get("central_cold", False):
+        return "other", "target_not_central_cold"
     anchor = sequence[config.snap_event_prev]
+    if anchor.get("central_cold", False):
+        return "other", "source_is_central_cold"
     if anchor["carrier_state"] != "gas" or anchor["host_state"] in {"satellite", "other_halo", "unresolved"}:
         return "other", "anchor_other"
     if anchor["radial_state"] == "inner" and anchor["phase_state"] == "hot":
@@ -166,6 +197,8 @@ def classify_exiting_tracer(tracer_id: int, sequence: dict[int, dict], config: P
         return "other", str((source or {}).get("reason", "unresolved_source"))
     if not source.get("central_cold", False):
         return "other", "source_not_central_cold"
+    if sequence[config.snap_event_cur].get("central_cold", False):
+        return "other", "target_is_central_cold"
     if any(sequence[snap]["central_cold"] for snap in range(config.snap_event_cur + 1, config.snap_end + 1)):
         return "recycled-out", ""
     return "stay-out", ""
@@ -222,7 +255,7 @@ def classify_halo_events(
         source_snap = config.snap_event_prev
         target_snap = config.snap_event_cur
         state_sequence = {str(snap): dict(value) for snap, value in sequence.items()}
-        missing_mask = {str(snap): not bool(value.get("valid", False)) for snap, value in sequence.items()}
+        missing_mask = {str(snap): not bool(value.get("resolved", False)) for snap, value in sequence.items()}
         return {
             "TracerID": int(tracer_id),
             "event": event,

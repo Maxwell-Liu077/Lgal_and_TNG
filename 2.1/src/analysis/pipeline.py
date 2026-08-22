@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from ..io.sampling import load_or_build_sample
+from ..io.catalog import load_catalogue_cache, load_subhalo_particle_offsets
 from ..io.state import load_state_snapshot, prepare_halo_states
 from ..io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
 from ..physics.feedback import compute_agn_strength
@@ -35,9 +36,8 @@ def _headers(config: Phase21Config) -> dict[int, dict]:
 ANCHOR_STATE_FIELDS = ("central_cold_ids",)
 EVENT_STATE_FIELDS = (
     "snap", "unresolved_snapshot", "unresolved_reason",
+    "group_id", "subfind_id", "is_main_central",
     "group_center_ckpc_h", "subhalo_center_ckpc_h", "r200c_ckpc_h",
-    "central_gas_ids", "satellite_gas_ids", "other_gas_ids",
-    "central_star_ids", "satellite_star_ids", "other_star_ids",
 )
 PHYSICS_STATE_FIELDS = (
     "snap", "r200c_pkpc", "m200c_msun", "mstar_msun", "m_bh_msun",
@@ -161,6 +161,16 @@ def _parent_product_worker(
         verbose=verbose,
     )
     parent_ids = np.asarray(list(mapping.values()), dtype=np.uint64)
+    catalogue = None
+    subhalo_offsets = None
+    if len(parent_ids):
+        catalogue = load_catalogue_cache(
+            base_path,
+            (snap,),
+            cache_dir=cache_dir,
+            verbose=False,
+        )[snap]
+        subhalo_offsets = load_subhalo_particle_offsets(base_path, snap)
     table = lookup_parent_records(
         base_path,
         snap,
@@ -170,12 +180,17 @@ def _parent_product_worker(
         max_workers=max_workers,
         parallel_backend=parallel_backend,
         verbose=verbose,
+        membership_catalogue=catalogue,
+        subhalo_offsets=subhalo_offsets,
     )
     indexed = {}
     for index, parent_id in enumerate(np.asarray(table.get("particle_ids", []), dtype=np.uint64)):
         indexed[int(parent_id)] = {
             "particle_id": int(parent_id),
             "particle_type": int(table["particle_type"][index]),
+            "particle_index": int(table["particle_index"][index]),
+            "bound_subhalo_id": int(table["bound_subhalo_id"][index]),
+            "bound_group_id": int(table["bound_group_id"][index]),
             "coordinates": table["coordinates"][index],
             "sfr": float(table["sfr"][index]),
             "internal_energy": float(table["internal_energy"][index]),
@@ -355,6 +370,22 @@ def run_phase21(
     normalized = compute_all_normalized_statistics(halo_results, config)
     agn_statistics = compute_agn_quartile_statistics(halo_results, config)
     composition = compute_composition_statistics(halo_results, config)
+    closure_diagnostics = {
+        "max_abs_count_in_error": int(np.max(np.abs(halo_results.get("n_in_closure_error", np.array([0]))))),
+        "max_abs_count_out_error": int(np.max(np.abs(halo_results.get("n_out_closure_error", np.array([0]))))),
+        "max_abs_mass_in_error_msun": float(np.max(np.abs(halo_results.get("mass_in_closure_error_msun", np.array([0.0]))))),
+        "max_abs_mass_out_error_msun": float(np.max(np.abs(halo_results.get("mass_out_closure_error_msun", np.array([0.0]))))),
+        "max_abs_rate_in_error_msun_per_yr": float(np.max(np.abs(halo_results.get("rate_in_closure_error_msun_per_yr", np.array([0.0]))))),
+        "max_abs_rate_out_error_msun_per_yr": float(np.max(np.abs(halo_results.get("rate_out_closure_error_msun_per_yr", np.array([0.0]))))),
+        "max_abs_composition_in_error_msun_per_yr": float(np.max(np.abs(composition.get("in_closure_error", np.array([0.0]))))),
+        "max_abs_composition_out_error_msun_per_yr": float(np.max(np.abs(composition.get("out_closure_error", np.array([0.0]))))),
+    }
+
+    def global_other_fraction(prefix: str) -> float:
+        total = float(np.sum(np.asarray(halo_results[f"n_total_{prefix}"], dtype=float)))
+        other = float(np.sum(np.asarray(halo_results[f"n_other_{prefix}"], dtype=float)))
+        return other / total if total > 0 else np.nan
+
     metadata = {
         "phase": "2.1", "base_path": config.base_path, "snap_start": config.snap_start,
         "snap_event_prev": config.snap_event_prev, "snap_event_cur": config.snap_event_cur,
@@ -365,6 +396,7 @@ def run_phase21(
         "state_workers": config.state_workers,
         "state_parallel_backend": config.state_parallel_backend,
         "catalogue_cache": "snapshot-level immutable NPZ cache",
+        "particle_binding_policy": "official Subhalo/SnapByType offsets; FoF/subhalo fuzz remains unbound",
         "tracer_mass_msun": config.tracer_mass_msun, "sample_metadata": sample_metadata,
         "state_rejected": state_rejected,
         "other_policy": "other is removed from the valid mutually-exclusive mother set but retained in totals and composition fractions",
@@ -373,19 +405,26 @@ def run_phase21(
         "fingerprint": config.fingerprint,
         "fingerprint_payload": config.fingerprint_payload,
         "schema_version": config.cache_schema_version,
+        "event_sequence_windows": {"in": [config.snap_start, config.snap_event_cur], "out": [config.snap_event_prev, config.snap_end]},
+        "rate_definitions": {
+            "rate_supply_msun_per_yr": "rate_total_in_msun_per_yr",
+            "rate_feedback_msun_per_yr": "rate_total_out_msun_per_yr",
+            "rate_pf_in_msun_per_yr": "rate_first_in_eff_msun_per_yr + rate_stay_out_msun_per_yr",
+        },
+        "effective_counts": {
+            "agn_quartile_n_finite": agn_statistics["n_finite"],
+            "agn_quartile_n_assigned": agn_statistics["n_assigned"],
+            "composition_in_event_count": composition["in_event_count"],
+            "composition_out_event_count": composition["out_event_count"],
+        },
+        "global_other_fraction": {"in": global_other_fraction("in"), "out": global_other_fraction("out")},
+        "closure_diagnostics": closure_diagnostics,
     }
     result = {
         "metadata": metadata, "sample": sample, "halo_results": halo_results,
         "binned_statistics": binned, "normalized_statistics": normalized,
         "agn_quartile_statistics": agn_statistics, "composition_statistics": composition,
-        "closure_diagnostics": {
-            "max_abs_count_in_error": int(np.max(np.abs(halo_results.get("n_in_closure_error", np.array([0]))))),
-            "max_abs_count_out_error": int(np.max(np.abs(halo_results.get("n_out_closure_error", np.array([0]))))),
-            "max_abs_mass_in_error_msun": float(np.max(np.abs(halo_results.get("mass_in_closure_error_msun", np.array([0.0]))))),
-            "max_abs_mass_out_error_msun": float(np.max(np.abs(halo_results.get("mass_out_closure_error_msun", np.array([0.0]))))),
-            "max_abs_rate_in_error_msun_per_yr": float(np.max(np.abs(halo_results.get("rate_in_closure_error_msun_per_yr", np.array([0.0]))))),
-            "max_abs_rate_out_error_msun_per_yr": float(np.max(np.abs(halo_results.get("rate_out_closure_error_msun_per_yr", np.array([0.0]))))),
-        },
+        "closure_diagnostics": closure_diagnostics,
         "event_ledgers": ledgers,
     }
     if verbose:

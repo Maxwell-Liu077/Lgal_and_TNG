@@ -11,15 +11,17 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.analysis.events import classify_halo_events
-from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics
-from src.io.catalog import _normalise_catalogue, subfind_counts
+from src.analysis.events import classify_halo_events, classify_parent_state
+from src.analysis.pipeline import _assign_agn_quartiles, _mean_state_inputs
+from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics, normalize_halo_rates
+from src.io.catalog import _normalise_catalogue, load_subhalo_particle_offsets, subfind_counts
 from src.io.sampling import _select_candidates
 from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
 from src.io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
 from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
+from src.plotting import plot_agn_cooling, plot_composition, plot_feedback_before_accretion
 from src.utils.config import Phase21Config
 
 
@@ -113,6 +115,15 @@ def test_snapshot_state_keeps_mbh_from_branch(monkeypatch) -> None:
         "/unused", branch, {"BoxSize": 1000.0, "Time": 0.5}, Phase21Config(), catalogue=catalogue
     )
     assert state["m_bh_msun"] == branch["m_bh_msun"]
+    # If the MPB object is not GroupFirstSub, its own Subfind interval is the
+    # tracked central membership and the FoF central is excluded as satellite.
+    gas["Coordinates"][2] = [1.0, 0.0, 0.0]
+    gas["StarFormationRate"][2] = 1.0
+    satellite_branch = {**branch, "subfind_id": 1, "is_main_central": False}
+    satellite_state = build_snapshot_state(
+        "/unused", satellite_branch, {"BoxSize": 1000.0, "Time": 0.5}, Phase21Config(), catalogue=catalogue
+    )
+    np.testing.assert_array_equal(satellite_state["central_cold_ids"], np.array([3], dtype=np.uint64))
 
 
 def test_state_cache_supports_selective_snapshot_loading(tmp_path) -> None:
@@ -130,6 +141,23 @@ def test_state_cache_supports_selective_snapshot_loading(tmp_path) -> None:
     state = load_state_snapshot(path, 95, fields=("central_cold_ids",))
     assert set(state) == {"central_cold_ids"}
     np.testing.assert_array_equal(state["central_cold_ids"], np.array([3], dtype=np.uint64))
+
+
+def test_official_subhalo_offsets_are_loaded_by_particle_type(tmp_path) -> None:
+    """The binding layer reads only requested columns from the TNG offsets file."""
+
+    import h5py
+
+    base_path = tmp_path / "output"
+    base_path.mkdir()
+    offset_dir = tmp_path / "postprocessing" / "offsets"
+    offset_dir.mkdir(parents=True)
+    with h5py.File(offset_dir / "offsets_094.hdf5", "w") as handle:
+        group = handle.create_group("Subhalo")
+        group["SnapByType"] = np.arange(18, dtype=np.int64).reshape(3, 6)
+    offsets = load_subhalo_particle_offsets(base_path, 94, particle_types=(0, 4))
+    np.testing.assert_array_equal(offsets[0], [0, 6, 12])
+    np.testing.assert_array_equal(offsets[4], [4, 10, 16])
 
 
 def test_tracer_scans_parallelize_and_cache_by_snapshot_chunk(tmp_path) -> None:
@@ -195,8 +223,17 @@ def test_tracer_scans_parallelize_and_cache_by_snapshot_chunk(tmp_path) -> None:
         block_size=2,
         max_workers=2,
         parallel_backend="process",
+        membership_catalogue={
+            "GroupFirstSub": np.array([0, 1], dtype=np.int64),
+            "GroupNsubs": np.array([1, 1], dtype=np.int64),
+            "SubhaloLenType": np.array([[2, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0]], dtype=np.int64),
+        },
+        subhalo_offsets={0: np.array([0, 2], dtype=np.uint64)},
     )
     np.testing.assert_array_equal(records["particle_ids"], np.array([10, 30], dtype=np.uint64))
+    np.testing.assert_array_equal(records["particle_index"], np.array([0, 2], dtype=np.uint64))
+    np.testing.assert_array_equal(records["bound_subhalo_id"], np.array([0, 1]))
+    np.testing.assert_array_equal(records["bound_group_id"], np.array([0, 1]))
     assert len(list((cache_dir / "chunk_scans").glob("**/chunk_*.npz"))) == 6
 
 
@@ -271,6 +308,10 @@ def _synthetic_event_inputs():
     # other history
     for snap in range(90, 96):
         add(6, snap, 20, cold=True, bad=snap == 92)
+    # Every entering event is independently known from the anchor catalogue
+    # to be central cold at snap95.  Keep that endpoint consistent with C95=1.
+    for tracer in range(1, 7):
+        add(tracer, 95, 5, cold=True, central=True)
     # stay-out and recycled-out
     for snap in range(94, 100):
         add(7, snap, 5 if snap == 94 else 20, cold=snap == 94, hot=snap > 94, central=snap == 94)
@@ -297,6 +338,13 @@ def test_event_classes_are_complete_and_close() -> None:
     assert result["n_total_out"] == result["n_stay_out"] + result["n_recycled_out"] + result["n_other_out"]
     assert np.isclose(result["mass_in_closure_error_msun"], 0.0)
     assert np.isclose(result["mass_out_closure_error_msun"], 0.0)
+    # Resolved stars/winds/satellites are other, not falsely marked as missing.
+    other_entry = next(entry for entry in ledger if entry["TracerID"] == 6)
+    assert other_entry["missing_mask"]["92"] is False
+    entering_entry = next(entry for entry in ledger if entry["event"] == "in")
+    exiting_entry = next(entry for entry in ledger if entry["event"] == "out")
+    assert tuple(map(int, entering_entry["state_sequence"])) == tuple(range(90, 96))
+    assert tuple(map(int, exiting_entry["state_sequence"])) == tuple(range(94, 100))
 
 
 def test_agn_average_physical_inputs_and_cooling() -> None:
@@ -312,6 +360,79 @@ def test_agn_average_physical_inputs_and_cooling() -> None:
     assert cooling["rate_sam_isothermal_msun_per_yr"] >= 0
     strength = compute_agn_strength(m_hot_msun=1.0e10, m_bh_msun=1.0e8, r200c_pkpc=100.0, v200c_km_s=200.0)
     assert np.isfinite(strength["agn_strength"])
+    assert np.isneginf(compute_agn_strength(m_hot_msun=1.0e10, m_bh_msun=0.0, r200c_pkpc=100.0, v200c_km_s=200.0)["agn_strength"])
+    assert np.isnan(compute_agn_strength(m_hot_msun=0.0, m_bh_msun=1.0e8, r200c_pkpc=100.0, v200c_km_s=200.0)["agn_strength"])
+
+    config = Phase21Config()
+    means = _mean_state_inputs(
+        {
+            94: {"mstar_msun": 1.0e10, "m_hot_msun": 2.0e10, "m_cgm_msun": 3.0e10, "m200c_msun": 4.0e11},
+            95: {"mstar_msun": 3.0e10, "m_hot_msun": 4.0e10, "m_cgm_msun": 5.0e10, "m200c_msun": 8.0e11},
+        },
+        config,
+    )
+    assert means == {
+        "mstar_mean_msun": 2.0e10,
+        "m_hot_mean_msun": 3.0e10,
+        "m_cgm_mean_msun": 4.0e10,
+        "m200c_mean_msun": 6.0e11,
+    }
+
+
+def test_agn_quartiles_keep_zero_bh_and_stable_ties() -> None:
+    """-inf remains Q1; NaN is excluded; SubfindID resolves equal values."""
+
+    config = Phase21Config()
+    records = [
+        {"mass_bin_index": 0, "agn_strength": -np.inf, "subfind_id_z99": 40},
+        {"mass_bin_index": 0, "agn_strength": 1.0, "subfind_id_z99": 20},
+        {"mass_bin_index": 0, "agn_strength": 1.0, "subfind_id_z99": 10},
+        {"mass_bin_index": 0, "agn_strength": np.nan, "subfind_id_z99": 5},
+        {"mass_bin_index": 0, "agn_strength": 2.0, "subfind_id_z99": 30},
+    ]
+    _assign_agn_quartiles(records, config)
+    by_subfind = {record["subfind_id_z99"]: record["agn_quartile"] for record in records}
+    assert by_subfind == {40: 1, 10: 2, 20: 3, 30: 4, 5: 0}
+
+
+def test_radial_priority_and_exact_other_halo_binding() -> None:
+    """Subhalo-centered inner wins, while offset binding finds other halos."""
+
+    config = Phase21Config()
+    state = {
+        "group_id": 4,
+        "subfind_id": 10,
+        "group_center_ckpc_h": np.array([500.0, 0.0, 0.0]),
+        "subhalo_center_ckpc_h": np.zeros(3),
+        "r200c_ckpc_h": 100.0,
+    }
+    base_record = {
+        "particle_id": 1,
+        "particle_type": 0,
+        "coordinates": np.array([5.0, 0.0, 0.0]),
+        "sfr": 1.0,
+        "internal_energy": 100.0,
+        "electron_abundance": 0.1,
+        "formation_time": np.nan,
+    }
+    tracked = classify_parent_state(
+        {**base_record, "bound_subhalo_id": 10, "bound_group_id": 4},
+        state,
+        {"BoxSize": 1000.0},
+        config,
+    )
+    assert tracked["radial_state"] == "inner"
+    assert tracked["host_state"] == "main_central"
+    assert tracked["central_cold"]
+    other = classify_parent_state(
+        {**base_record, "bound_subhalo_id": 99, "bound_group_id": 8},
+        state,
+        {"BoxSize": 1000.0},
+        config,
+    )
+    assert other["host_state"] == "other_halo"
+    assert not other["valid"]
+    assert other["reason"] == "other_halo"
 
 
 def test_composition_and_quartile_statistics() -> None:
@@ -329,12 +450,86 @@ def test_composition_and_quartile_statistics() -> None:
         "rate_stay_out_msun_per_yr": np.ones(4),
         "rate_recycled_out_msun_per_yr": np.ones(4),
         "rate_other_out_msun_per_yr": np.ones(4),
+        "rate_total_in_msun_per_yr": np.full(4, 4.0),
+        "rate_total_out_msun_per_yr": np.full(4, 3.0),
+        "n_total_in": np.full(4, 4),
+        "n_total_out": np.full(4, 3),
     }
     composition = compute_composition_statistics(results, config)
     np.testing.assert_allclose(np.nansum(composition["in_component_fractions"][:, :2], axis=0), 1.0)
     np.testing.assert_allclose(np.nansum(composition["out_component_fractions"][:, :2], axis=0), 1.0)
     agn = compute_agn_quartile_statistics(results, config)
     assert agn["n_finite"][0, 0] == 1
+    assert agn["n_assigned"][0, 0] == 1
+
+    normalization_input = {
+        **results,
+        "m_hot_mean_msun": np.array([1.0, 2.0, 4.0, 8.0]) * 1.0e9,
+        "mstar_mean_msun": np.array([2.0, 4.0, 8.0, 16.0]) * 1.0e9,
+        "rate_pf_in_msun_per_yr": np.ones(4),
+        "rate_cool_iso_msun_per_yr": np.full(4, 2.0),
+    }
+    normalized = normalize_halo_rates(normalization_input, "mhot")
+    np.testing.assert_allclose(normalized["rate_pf_in_msun_per_yr"], [1.0, 0.5, 0.25, 0.125])
+
+
+def test_readme_plot_layouts() -> None:
+    """The four README products include separate dispersion subpanels."""
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    config = Phase21Config()
+    n_bins = len(config.mass_bin_centers)
+    agn = {
+        "mass_bin_center": config.mass_bin_centers,
+        "median": np.ones((4, n_bins)),
+        "p16": np.full((4, n_bins), 0.8),
+        "p84": np.full((4, n_bins), 1.2),
+        "n_finite": np.ones((4, n_bins), dtype=int),
+    }
+    halo = {
+        "mass_bin_index": np.array([0]),
+        "agn_quartile": np.array([1]),
+        "x_cool_mean": np.array([1.0]),
+        "m_hot_mean_msun": np.array([1.0e10]),
+        "mstar_mean_msun": np.array([2.0e10]),
+        "rate_pf_in_msun_per_yr": np.array([1.0]),
+        "rate_cool_iso_msun_per_yr": np.array([2.0]),
+    }
+    normalized = {}
+    for name in ("mhot", "mstar"):
+        normalized[name] = {
+            "mass_bin_center": config.mass_bin_centers,
+            "pf_in_median": np.ones(n_bins),
+            "pf_in_p16": np.full(n_bins, 0.8),
+            "pf_in_p84": np.full(n_bins, 1.2),
+            "cool_iso_median": np.full(n_bins, 2.0),
+            "cool_iso_p16": np.full(n_bins, 1.8),
+            "cool_iso_p84": np.full(n_bins, 2.2),
+        }
+    composition = {
+        "mass_bin_center": config.mass_bin_centers,
+        "in_component_names": np.array(["a", "b", "c", "other"]),
+        "out_component_names": np.array(["a", "b", "other"]),
+        "in_component_fractions": np.full((4, n_bins), 0.25),
+        "out_component_fractions": np.full((3, n_bins), 1.0 / 3.0),
+        "in_event_count": np.ones(n_bins, dtype=int),
+        "out_event_count": np.ones(n_bins, dtype=int),
+    }
+    figures = [
+        plot_agn_cooling(agn, halo_results=halo),
+        plot_composition(composition, direction="in"),
+        plot_composition(composition, direction="out"),
+        plot_feedback_before_accretion(normalized, halo_results=halo),
+    ]
+    assert [len(figure.axes) for figure in figures] == [2, 1, 1, 4]
+    assert len(figures[0].axes[1].collections) == 4
+    assert len(figures[3].axes[2].collections) == 2
+    assert len(figures[3].axes[3].collections) == 2
+    for figure in figures:
+        plt.close(figure)
 
 
 if __name__ == "__main__":

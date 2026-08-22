@@ -254,6 +254,9 @@ def _empty_records() -> dict[str, np.ndarray]:
     return {
         "particle_ids": np.empty(0, dtype=np.uint64),
         "particle_type": np.empty(0, dtype=np.int8),
+        "particle_index": np.empty(0, dtype=np.uint64),
+        "bound_subhalo_id": np.empty(0, dtype=np.int64),
+        "bound_group_id": np.empty(0, dtype=np.int64),
         "coordinates": np.empty((0, 3)),
         "sfr": np.empty(0),
         "internal_energy": np.empty(0),
@@ -266,6 +269,7 @@ def _scan_records_chunk(
     path: str | Path,
     targets: np.ndarray,
     block_size: int,
+    particle_offsets: np.ndarray | None = None,
 ) -> dict[str, np.ndarray]:
     """Read selected gas/star/BH parent records from one snapshot chunk."""
 
@@ -274,10 +278,13 @@ def _scan_records_chunk(
     except ImportError as exc:
         raise ImportError("h5py is required for particle lookup") from exc
     parts = {key: [] for key in _empty_records()}
+    particle_offsets = np.zeros(6, dtype=np.uint64) if particle_offsets is None else np.asarray(particle_offsets, dtype=np.uint64)
+    if particle_offsets.shape != (6,):
+        raise ValueError("particle_offsets must contain six global type offsets")
     specifications = {
         "PartType0": (0, ("ParticleIDs", "Coordinates", "StarFormationRate", "InternalEnergy", "ElectronAbundance")),
         "PartType4": (4, ("ParticleIDs", "Coordinates", "GFM_StellarFormationTime")),
-        "PartType5": (5, ("ParticleIDs",)),
+        "PartType5": (5, ("ParticleIDs", "Coordinates")),
     }
     with h5py.File(path, "r") as handle:
         for name, (particle_type, _) in specifications.items():
@@ -291,8 +298,15 @@ def _scan_records_chunk(
                 if not np.any(valid):
                     continue
                 count = int(np.count_nonzero(valid))
+                local_indices = np.flatnonzero(valid).astype(np.uint64, copy=False)
                 parts["particle_ids"].append(ids[valid])
                 parts["particle_type"].append(np.full(count, particle_type, dtype=np.int8))
+                parts["particle_index"].append(particle_offsets[particle_type] + np.uint64(start) + local_indices)
+                # Filled after all chunks are merged, using the official TNG
+                # Subhalo/SnapByType offsets.  -2 means not yet annotated;
+                # -1 is reserved for a resolved, genuinely unbound particle.
+                parts["bound_subhalo_id"].append(np.full(count, -2, dtype=np.int64))
+                parts["bound_group_id"].append(np.full(count, -2, dtype=np.int64))
                 parts["coordinates"].append(np.asarray(group["Coordinates"][start:stop], dtype=float)[valid] if "Coordinates" in group else np.full((count, 3), np.nan))
                 parts["sfr"].append(np.asarray(group["StarFormationRate"][start:stop], dtype=float)[valid] if "StarFormationRate" in group else np.full(count, np.nan))
                 parts["internal_energy"].append(np.asarray(group["InternalEnergy"][start:stop], dtype=float)[valid] if "InternalEnergy" in group else np.full(count, np.nan))
@@ -322,7 +336,12 @@ def _process_chunk_worker(path: str):
     if _WORKER_MODE == "tracer_parent_map":
         return _scan_tracer_map_chunk(path, _WORKER_QUERY, _WORKER_BLOCK_SIZE)
     if _WORKER_MODE == "parent_records":
-        return _scan_records_chunk(path, _WORKER_QUERY, _WORKER_BLOCK_SIZE)
+        return _scan_records_chunk(
+            path,
+            _WORKER_QUERY["targets"],
+            _WORKER_BLOCK_SIZE,
+            _WORKER_QUERY["particle_offsets"][str(path)],
+        )
     raise RuntimeError(f"Unknown tracer worker mode: {_WORKER_MODE}")
 
 
@@ -396,6 +415,87 @@ def _merge_grouped(results: list[dict[int, np.ndarray]]) -> dict[int, np.ndarray
             if len(values):
                 merged.setdefault(int(label), []).append(np.asarray(values, dtype=np.uint64))
     return {label: np.unique(np.concatenate(parts)) for label, parts in merged.items()}
+
+
+def _snapshot_chunk_particle_offsets(paths: list[Path]) -> dict[str, np.ndarray]:
+    """Return the global per-type starting index of every snapshot chunk."""
+
+    try:
+        import h5py
+    except ImportError as exc:
+        raise ImportError("h5py is required for particle lookup") from exc
+    cumulative = np.zeros(6, dtype=np.uint64)
+    output: dict[str, np.ndarray] = {}
+    for path in paths:
+        output[str(path)] = cumulative.copy()
+        with h5py.File(path, "r") as handle:
+            if "Header" in handle and "NumPart_ThisFile" in handle["Header"].attrs:
+                counts = np.asarray(handle["Header"].attrs["NumPart_ThisFile"], dtype=np.uint64)
+            else:
+                counts = np.asarray(
+                    [len(handle[f"PartType{ptype}"]["ParticleIDs"]) if f"PartType{ptype}" in handle and "ParticleIDs" in handle[f"PartType{ptype}"] else 0 for ptype in range(6)],
+                    dtype=np.uint64,
+                )
+        if counts.shape != (6,):
+            raise ValueError(f"Invalid NumPart_ThisFile in {path}")
+        cumulative += counts
+    return output
+
+
+def _annotate_subhalo_membership(
+    records: dict[str, np.ndarray],
+    catalogue: dict[str, np.ndarray],
+    subhalo_offsets: dict[int, np.ndarray],
+) -> None:
+    """Annotate selected records with exact bound subhalo and FoF IDs."""
+
+    particle_indices = np.asarray(records["particle_index"], dtype=np.uint64)
+    particle_types = np.asarray(records["particle_type"], dtype=np.int8)
+    lengths = np.asarray(catalogue["SubhaloLenType"], dtype=np.int64)
+    first = np.asarray(catalogue["GroupFirstSub"], dtype=np.int64)
+    nsubs = np.asarray(catalogue["GroupNsubs"], dtype=np.int64)
+    if lengths.ndim != 2 or lengths.shape[1] < 6 or first.shape != nsubs.shape:
+        raise ValueError("Invalid catalogue arrays for particle membership")
+    bound_subhalo = np.full(len(particle_indices), -1, dtype=np.int64)
+    for particle_type in np.unique(particle_types):
+        ptype = int(particle_type)
+        selected = np.flatnonzero(particle_types == ptype)
+        starts_all = np.asarray(subhalo_offsets.get(ptype, np.empty(0)), dtype=np.uint64)
+        if len(starts_all) != len(lengths):
+            raise ValueError(f"Missing subhalo offsets for particle type {ptype}")
+        positive_subhalos = np.flatnonzero(lengths[:, ptype] > 0)
+        if not len(positive_subhalos) or not len(selected):
+            continue
+        starts = starts_all[positive_subhalos]
+        if np.any(np.diff(starts) <= 0):
+            raise ValueError(f"Non-increasing positive subhalo offsets for particle type {ptype}")
+        indices = particle_indices[selected]
+        positions = np.searchsorted(starts, indices, side="right") - 1
+        candidate = positions >= 0
+        if not np.any(candidate):
+            continue
+        rows = selected[candidate]
+        subhalos = positive_subhalos[positions[candidate]]
+        inside = indices[candidate] < starts_all[subhalos] + lengths[subhalos, ptype].astype(np.uint64)
+        bound_subhalo[rows[inside]] = subhalos[inside]
+
+    bound_group = np.full(len(bound_subhalo), -1, dtype=np.int64)
+    valid_groups = np.flatnonzero((first >= 0) & (nsubs > 0))
+    ordered_first = first[valid_groups]
+    if len(ordered_first) and np.any(np.diff(ordered_first) <= 0):
+        raise ValueError("GroupFirstSub must increase over non-empty groups")
+    selected = np.flatnonzero(bound_subhalo >= 0)
+    if len(selected):
+        positions = np.searchsorted(ordered_first, bound_subhalo[selected], side="right") - 1
+        candidate = positions >= 0
+        rows = selected[candidate]
+        groups = valid_groups[positions[candidate]]
+        inside = bound_subhalo[rows] < first[groups] + nsubs[groups]
+        bound_group[rows[inside]] = groups[inside]
+        if np.any(bound_group[selected] < 0):
+            raise ValueError("A bound subhalo could not be mapped to its FoF group")
+    records["bound_subhalo_id"] = bound_subhalo
+    records["bound_group_id"] = bound_group
 
 
 def scan_parent_to_tracer(
@@ -677,8 +777,10 @@ def lookup_parent_records(
     max_workers: int = 1,
     parallel_backend: str = "serial",
     verbose: bool = False,
+    membership_catalogue: dict[str, np.ndarray] | None = None,
+    subhalo_offsets: dict[int, np.ndarray] | None = None,
 ) -> dict[str, np.ndarray]:
-    """Read parent records with resumable chunk-level parallelism."""
+    """Read parent records and optionally resolve exact Subfind binding."""
 
     if block_size < 1 or max_workers < 1:
         raise ValueError("block_size and max_workers must be positive")
@@ -687,7 +789,8 @@ def lookup_parent_records(
 
     targets = np.unique(np.asarray(parent_ids, dtype=np.uint64))
     empty = _empty_records()
-    fingerprint = _fingerprint("parent_records", snap, targets, str(base_path))
+    membership_mode = "subfind-offsets-v1" if membership_catalogue is not None and subhalo_offsets is not None else "membership-unannotated"
+    fingerprint = _fingerprint("parent_records", snap, targets, f"{base_path}|particle-index-v2|{membership_mode}")
     path = Path(cache_dir) / f"parent_records_{fingerprint}.npz" if cache_dir else None
     if path is not None and path.is_file():
         try:
@@ -707,6 +810,7 @@ def lookup_parent_records(
             temporary.replace(path)
         return empty
     paths = snapshot_chunk_paths(base_path, snap)
+    particle_offsets = _snapshot_chunk_particle_offsets(paths)
     chunk_root = (
         Path(cache_dir) / "chunk_scans" / f"parent_records_snap{snap:03d}_{fingerprint[:16]}"
         if cache_dir is not None else None
@@ -729,7 +833,7 @@ def lookup_parent_records(
     serial = parallel_backend == "serial" or max_workers == 1
     if serial:
         for completed, (index, chunk, chunk_cache) in enumerate(pending, start=1):
-            records = _scan_records_chunk(chunk, targets, block_size)
+            records = _scan_records_chunk(chunk, targets, block_size, particle_offsets[str(chunk)])
             records_per_chunk.append(records)
             if chunk_cache is not None:
                 _save_array_chunk(chunk_cache, records, fingerprint)
@@ -739,12 +843,19 @@ def lookup_parent_records(
         executor_class = ThreadPoolExecutor if parallel_backend == "thread" else ProcessPoolExecutor
         kwargs = {"max_workers": min(max_workers, len(pending))}
         if parallel_backend == "process":
-            kwargs.update({"initializer": _initialize_chunk_worker, "initargs": ("parent_records", targets, block_size)})
+            kwargs.update({
+                "initializer": _initialize_chunk_worker,
+                "initargs": (
+                    "parent_records",
+                    {"targets": targets, "particle_offsets": particle_offsets},
+                    block_size,
+                ),
+            })
         with executor_class(**kwargs) as executor:
             future_map = {}
             for index, chunk, chunk_cache in pending:
                 future = (
-                    executor.submit(_scan_records_chunk, chunk, targets, block_size)
+                    executor.submit(_scan_records_chunk, chunk, targets, block_size, particle_offsets[str(chunk)])
                     if parallel_backend == "thread"
                     else executor.submit(_process_chunk_worker, str(chunk))
                 )
@@ -775,6 +886,10 @@ def lookup_parent_records(
         raise ValueError(f"Parent particle ID appears more than once at snap {snap}")
     order = np.argsort(merged["particle_ids"], kind="stable")
     result = {key: values[order] for key, values in merged.items()}
+    if (membership_catalogue is None) != (subhalo_offsets is None):
+        raise ValueError("membership_catalogue and subhalo_offsets must be supplied together")
+    if membership_catalogue is not None and subhalo_offsets is not None:
+        _annotate_subhalo_membership(result, membership_catalogue, subhalo_offsets)
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp.npz")
