@@ -127,20 +127,49 @@ def classify_parent_state(record: dict[str, object], state: dict, header: dict, 
     return {"host_state": host, "radial_state": radial, "phase_state": phase, "carrier_state": carrier, "central_cold": bool(central_cold), "valid": bool(valid), "resolved": bool(resolved), "reason": reason}
 
 
-def _state_sequence(tracer_id: int, snapshots: tuple[int, ...], parent_maps: dict[int, dict[int, int]], records: dict[int, dict[int, dict]], states: dict[int, dict], headers: dict[int, dict], config: Phase21Config) -> dict[int, dict]:
+def _state_sequence(tracer_id: int, snapshots: tuple[int, ...], parent_maps: dict[int, dict], records: dict[int, dict], states: dict[int, dict], headers: dict[int, dict], config: Phase21Config) -> dict[int, dict]:
     """Resolve one tracer into a state dictionary at every requested snap."""
 
     sequence = {}
     for snap in snapshots:
         snap_map = parent_maps.get(snap, parent_maps.get(str(snap), {}))
-        parent_id = snap_map.get(int(tracer_id))
+        if "tracer_ids" in snap_map:
+            tracer_ids = np.asarray(snap_map["tracer_ids"], dtype=np.uint64)
+            map_position = int(np.searchsorted(tracer_ids, np.uint64(tracer_id)))
+            parent_id = (
+                int(snap_map["parent_ids"][map_position])
+                if map_position < len(tracer_ids) and int(tracer_ids[map_position]) == int(tracer_id)
+                else None
+            )
+        else:
+            parent_id = snap_map.get(int(tracer_id))
         snap_records = records.get(snap, records.get(str(snap), {}))
-        if parent_id is None or parent_id not in snap_records:
+        record = None
+        if parent_id is not None and "particle_ids" in snap_records:
+            particle_ids = np.asarray(snap_records["particle_ids"], dtype=np.uint64)
+            position = int(np.searchsorted(particle_ids, np.uint64(parent_id)))
+            if position < len(particle_ids) and int(particle_ids[position]) == int(parent_id):
+                record = {
+                    "particle_id": int(parent_id),
+                    "particle_type": int(snap_records["particle_type"][position]),
+                    "particle_index": int(snap_records["particle_index"][position]),
+                    "bound_subhalo_id": int(snap_records["bound_subhalo_id"][position]),
+                    "bound_group_id": int(snap_records["bound_group_id"][position]),
+                    "coordinates": snap_records["coordinates"][position],
+                    "sfr": float(snap_records["sfr"][position]),
+                    "internal_energy": float(snap_records["internal_energy"][position]),
+                    "electron_abundance": float(snap_records["electron_abundance"][position]),
+                    "formation_time": float(snap_records["formation_time"][position]),
+                }
+        elif parent_id is not None:
+            # Backward-compatible path for synthetic tests and direct callers.
+            record = snap_records.get(parent_id)
+        if record is None:
             sequence[snap] = {"host_state": "unresolved", "radial_state": "unresolved", "phase_state": "unresolved", "carrier_state": "unresolved", "central_cold": False, "valid": False, "resolved": False, "reason": "unresolved"}
             continue
         state = states[snap] if snap in states else states[str(snap)]
         header = headers[snap] if snap in headers else headers[str(snap)]
-        sequence[snap] = classify_parent_state(snap_records[parent_id], state, header, config)
+        sequence[snap] = classify_parent_state(record, state, header, config)
     return sequence
 
 
@@ -228,8 +257,8 @@ def classify_halo_events(
     enter_tracer_ids: np.ndarray,
     exit_tracer_ids: np.ndarray,
     *,
-    parent_maps: dict[int, dict[int, int]],
-    records: dict[int, dict[int, dict]],
+    parent_maps: dict[int, dict],
+    records: dict[int, dict],
     states: dict[int, dict],
     headers: dict[int, dict],
     config: Phase21Config,
@@ -252,17 +281,15 @@ def classify_halo_events(
         """Serialize the complete state history needed to audit one event."""
 
         anchor_snap = config.snap_event_prev if event == "in" else config.snap_event_cur
-        source_snap = config.snap_event_prev
-        target_snap = config.snap_event_cur
-        state_sequence = {str(snap): dict(value) for snap, value in sequence.items()}
+        # Sequence states are already unique to this event and immutable after
+        # classification.  Reuse them instead of duplicating six dictionaries
+        # plus three anchor/source/target dictionaries per tracer.
+        state_sequence = {str(snap): value for snap, value in sequence.items()}
         missing_mask = {str(snap): not bool(value.get("resolved", False)) for snap, value in sequence.items()}
         return {
             "TracerID": int(tracer_id),
             "event": event,
             "anchor_snapshot": int(anchor_snap),
-            "anchor_state": dict(sequence.get(anchor_snap, {})),
-            "source_state": dict(sequence.get(source_snap, {})),
-            "target_state": dict(sequence.get(target_snap, {})),
             "state_sequence": state_sequence,
             "missing_mask": missing_mask,
             "rate_class": label,

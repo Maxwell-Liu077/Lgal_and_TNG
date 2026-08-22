@@ -661,7 +661,8 @@ def scan_tracer_parent_map(
     max_workers: int = 1,
     parallel_backend: str = "serial",
     verbose: bool = False,
-) -> dict[int, int]:
+    columnar: bool = False,
+) -> dict[int, int] | dict[str, np.ndarray]:
     """Return TracerID→ParentID using resumable chunk-level parallelism."""
 
     if block_size < 1 or max_workers < 1:
@@ -678,6 +679,11 @@ def scan_tracer_parent_map(
             temporary = path.with_suffix(".tmp.npz")
             np.savez(temporary, tracer_ids=np.empty(0, dtype=np.uint64), parent_ids=np.empty(0, dtype=np.uint64))
             temporary.replace(path)
+        if columnar:
+            return {
+                "tracer_ids": np.empty(0, dtype=np.uint64),
+                "parent_ids": np.empty(0, dtype=np.uint64),
+            }
         return {}
     fingerprint = _fingerprint("tracer_parent_map", snap, targets, str(base_path))
     path = Path(cache_dir) / f"tracer_parent_map_{fingerprint}.npz" if cache_dir else None
@@ -688,10 +694,16 @@ def scan_tracer_parent_map(
                 parent_values = np.asarray(data["parent_ids"], dtype=np.uint64)
                 if tracer_values.ndim != 1 or parent_values.shape != tracer_values.shape:
                     raise ValueError("invalid tracer-parent cache shape")
-                if len(np.unique(tracer_values)) != len(tracer_values):
-                    raise ValueError("duplicate TracerID in cache")
+                if len(tracer_values) > 1 and not np.all(tracer_values[1:] > tracer_values[:-1]):
+                    order = np.argsort(tracer_values, kind="stable")
+                    tracer_values = tracer_values[order]
+                    parent_values = parent_values[order]
+                    if np.any(tracer_values[1:] == tracer_values[:-1]):
+                        raise ValueError("duplicate TracerID in cache")
                 if verbose:
                     print(f"[tracer tracer->parent snap={snap:03d}] final cache hit", flush=True)
+                if columnar:
+                    return {"tracer_ids": tracer_values, "parent_ids": parent_values}
                 return {int(tracer): int(parent) for tracer, parent in zip(tracer_values, parent_values)}
         except Exception:
             pass
@@ -751,20 +763,32 @@ def scan_tracer_parent_map(
                 if verbose:
                     print(f"[tracer tracer->parent snap={snap:03d}] {completed}/{len(pending)} chunk={index}", flush=True)
 
-    found: dict[int, int] = {}
-    for result in results:
-        for tracer_value, parent_value in zip(result["tracer_ids"], result["parent_ids"]):
-            tracer = int(tracer_value)
-            parent = int(parent_value)
-            if tracer in found and found[tracer] != parent:
-                raise ValueError(f"TracerID {tracer} has multiple parents at snap {snap}")
-            found[tracer] = parent
+    tracer_parts = [np.asarray(result["tracer_ids"], dtype=np.uint64) for result in results if len(result["tracer_ids"])]
+    parent_parts = [np.asarray(result["parent_ids"], dtype=np.uint64) for result in results if len(result["parent_ids"])]
+    if tracer_parts:
+        tracer_values = np.concatenate(tracer_parts)
+        parent_values = np.concatenate(parent_parts)
+        order = np.argsort(tracer_values, kind="stable")
+        tracer_values = tracer_values[order]
+        parent_values = parent_values[order]
+        duplicate = tracer_values[1:] == tracer_values[:-1]
+        if np.any(duplicate & (parent_values[1:] != parent_values[:-1])):
+            position = int(np.flatnonzero(duplicate & (parent_values[1:] != parent_values[:-1]))[0])
+            raise ValueError(f"TracerID {int(tracer_values[position + 1])} has multiple parents at snap {snap}")
+        keep = np.concatenate((np.ones(1, dtype=bool), ~duplicate))
+        tracer_values = tracer_values[keep]
+        parent_values = parent_values[keep]
+    else:
+        tracer_values = np.empty(0, dtype=np.uint64)
+        parent_values = np.empty(0, dtype=np.uint64)
     if path is not None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp.npz")
-        np.savez(temporary, tracer_ids=np.asarray(list(found), dtype=np.uint64), parent_ids=np.asarray(list(found.values()), dtype=np.uint64))
+        np.savez(temporary, tracer_ids=tracer_values, parent_ids=parent_values)
         temporary.replace(path)
-    return found
+    if columnar:
+        return {"tracer_ids": tracer_values, "parent_ids": parent_values}
+    return {int(tracer): int(parent) for tracer, parent in zip(tracer_values, parent_values)}
 
 
 def lookup_parent_records(

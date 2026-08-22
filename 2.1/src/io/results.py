@@ -36,6 +36,25 @@ def _save_events(path: Path, ledgers: list[list[dict]]) -> None:
         return
     temporary = path.with_suffix(".tmp.h5")
     string_type = h5py.string_dtype(encoding="utf-8")
+
+    def sequence_state(item: dict, role: str) -> dict:
+        """Derive duplicated endpoint views from the stored state sequence."""
+
+        if role in item:
+            return item[role]
+        anchor = int(item.get("anchor_snapshot", -1))
+        event = str(item.get("event", ""))
+        if role == "anchor_state":
+            snap = anchor
+        elif role == "source_state":
+            snap = anchor if event == "in" else anchor - 1
+        elif role == "target_state":
+            snap = anchor + 1 if event == "in" else anchor
+        else:
+            return {}
+        sequence = item.get("state_sequence", {})
+        return sequence.get(str(snap), sequence.get(snap, {}))
+
     with h5py.File(temporary, "w") as handle:
         handle.attrs["schema"] = "phase21-event-ledger-v1"
         for index, ledger in enumerate(ledgers):
@@ -48,15 +67,15 @@ def _save_events(path: Path, ledgers: list[list[dict]]) -> None:
             group.create_dataset("weight_msun", data=np.asarray([item["weight_msun"] for item in ledger], dtype=float))
             group.create_dataset(
                 "anchor_state",
-                data=np.asarray([json.dumps(json_ready(item.get("anchor_state", {})), ensure_ascii=False) for item in ledger], dtype=string_type),
+                data=np.asarray([json.dumps(json_ready(sequence_state(item, "anchor_state")), ensure_ascii=False) for item in ledger], dtype=string_type),
             )
             group.create_dataset(
                 "source_state",
-                data=np.asarray([json.dumps(json_ready(item.get("source_state", {})), ensure_ascii=False) for item in ledger], dtype=string_type),
+                data=np.asarray([json.dumps(json_ready(sequence_state(item, "source_state")), ensure_ascii=False) for item in ledger], dtype=string_type),
             )
             group.create_dataset(
                 "target_state",
-                data=np.asarray([json.dumps(json_ready(item.get("target_state", {})), ensure_ascii=False) for item in ledger], dtype=string_type),
+                data=np.asarray([json.dumps(json_ready(sequence_state(item, "target_state")), ensure_ascii=False) for item in ledger], dtype=string_type),
             )
             group.create_dataset(
                 "state_sequence",

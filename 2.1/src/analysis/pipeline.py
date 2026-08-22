@@ -145,8 +145,8 @@ def _parent_product_worker(
     max_workers: int,
     parallel_backend: str,
     verbose: bool,
-) -> tuple[int, dict[int, int], dict[int, dict]]:
-    """Resolve one history snapshot using chunk-level parallel scans."""
+) -> tuple[int, dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Resolve one history snapshot into compact columnar parent records."""
 
     tracer_cache = Path(cache_dir) / "tracer"
     particle_cache = Path(cache_dir) / "particles"
@@ -159,8 +159,9 @@ def _parent_product_worker(
         max_workers=max_workers,
         parallel_backend=parallel_backend,
         verbose=verbose,
+        columnar=True,
     )
-    parent_ids = np.asarray(list(mapping.values()), dtype=np.uint64)
+    parent_ids = np.asarray(mapping["parent_ids"], dtype=np.uint64)
     catalogue = None
     subhalo_offsets = None
     if len(parent_ids):
@@ -183,37 +184,29 @@ def _parent_product_worker(
         membership_catalogue=catalogue,
         subhalo_offsets=subhalo_offsets,
     )
-    indexed = {}
-    for index, parent_id in enumerate(np.asarray(table.get("particle_ids", []), dtype=np.uint64)):
-        indexed[int(parent_id)] = {
-            "particle_id": int(parent_id),
-            "particle_type": int(table["particle_type"][index]),
-            "particle_index": int(table["particle_index"][index]),
-            "bound_subhalo_id": int(table["bound_subhalo_id"][index]),
-            "bound_group_id": int(table["bound_group_id"][index]),
-            "coordinates": table["coordinates"][index],
-            "sfr": float(table["sfr"][index]),
-            "internal_energy": float(table["internal_energy"][index]),
-            "electron_abundance": float(table["electron_abundance"][index]),
-            "formation_time": float(table["formation_time"][index]),
-        }
-    return snap, mapping, indexed
+    # Keep the sorted NumPy table returned by ``lookup_parent_records``.
+    # Expanding tens of millions of rows into nested Python dictionaries
+    # multiplies memory use and makes every later full-GC pass extremely slow.
+    return snap, mapping, table
 
 
 def _parent_products(
-    event_ids: list[np.ndarray],
+    enter_ids: list[np.ndarray],
+    exit_ids: list[np.ndarray],
     config: Phase21Config,
     cache_dir: str | Path,
     *,
     verbose: bool = True,
-) -> tuple[dict[int, dict[int, int]], dict[int, dict[int, dict]]]:
+) -> tuple[dict[int, dict[str, np.ndarray]], dict[int, dict[str, np.ndarray]]]:
     """Resolve all event tracer parents and physical records by snapshot."""
 
-    nonempty = [np.asarray(values, dtype=np.uint64) for values in event_ids if len(values)]
-    all_events = np.unique(np.concatenate(nonempty)) if nonempty else np.empty(0, dtype=np.uint64)
-    parent_maps: dict[int, dict[int, int]] = {}
-    records: dict[int, dict[int, dict]] = {}
-    if not len(all_events):
+    enter_parts = [np.asarray(values, dtype=np.uint64) for values in enter_ids if len(values)]
+    exit_parts = [np.asarray(values, dtype=np.uint64) for values in exit_ids if len(values)]
+    enter_events = np.unique(np.concatenate(enter_parts)) if enter_parts else np.empty(0, dtype=np.uint64)
+    exit_events = np.unique(np.concatenate(exit_parts)) if exit_parts else np.empty(0, dtype=np.uint64)
+    parent_maps: dict[int, dict[str, np.ndarray]] = {}
+    records: dict[int, dict[str, np.ndarray]] = {}
+    if not len(enter_events) and not len(exit_events):
         # Avoid spawning workers or touching full snapshots when no anchor
         # event exists.  The empty caches are still materialized by the scan
         # functions if a caller explicitly requests them.
@@ -224,6 +217,16 @@ def _parent_products(
 
     jobs = list(config.snapshots)
     for number, snap in enumerate(jobs, start=1):
+        selected = []
+        if snap <= config.snap_event_cur and len(enter_events):
+            selected.append(enter_events)
+        if snap >= config.snap_event_prev and len(exit_events):
+            selected.append(exit_events)
+        all_events = (
+            np.unique(np.concatenate(selected))
+            if selected
+            else np.empty(0, dtype=np.uint64)
+        )
         snap, mapping, indexed = _parent_product_worker(
             config.base_path,
             snap,
@@ -239,7 +242,7 @@ def _parent_products(
         if verbose:
             print(
                 f"[tracer] snap={snap:03d} ({number}/{len(jobs)}) "
-                f"tracers={len(mapping)} parents={len(indexed)}",
+                f"tracers={len(mapping.get('tracer_ids', []))} parents={len(indexed.get('particle_ids', []))}",
                 flush=True,
             )
     return parent_maps, records
@@ -299,13 +302,15 @@ def run_phase21(
     if verbose:
         print("[phase21] resolving tracer histories", flush=True)
     parent_maps, parent_records = _parent_products(
-        [*enters, *exits],
+        enters,
+        exits,
         config,
         cache_dir,
         verbose=verbose,
     )
     records = []
     ledgers = []
+    classified_events = 0
     for index, state_record in enumerate(halo_states):
         event_snaps = set()
         if len(enters[index]):
@@ -359,11 +364,20 @@ def run_phase21(
         }
         records.append(record)
         ledgers.append(ledger)
-        # Raw membership arrays can be tens of GiB for a cluster-sized FoF.
-        # They are no longer retained by ``halo_states`` and can be released
-        # as soon as this halo's scalar result and compact ledger are ready.
+        classified_events += len(ledger)
         del states, previous, current
-        _release_process_memory()
+        if verbose and ((index + 1) % 10 == 0 or index + 1 == len(halo_states)):
+            print(
+                f"[events] classified halos={index + 1}/{len(halo_states)} "
+                f"events={classified_events}",
+                flush=True,
+            )
+    # The giant snapshot-level lookup products cannot be released while the
+    # event loop is active.  CPython reference counting is sufficient for the
+    # small per-halo temporaries, so run one full collection only after these
+    # global products become unreachable instead of scanning them per halo.
+    del parent_maps, parent_records, enters, exits, halo_states
+    _release_process_memory()
     _assign_agn_quartiles(records, config)
     halo_results = records_to_arrays(records)
     binned = compute_binned_statistics(halo_results, config)

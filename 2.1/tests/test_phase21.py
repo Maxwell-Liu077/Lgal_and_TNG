@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
@@ -12,10 +13,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.events import classify_halo_events, classify_parent_state
+import src.analysis.pipeline as pipeline_module
 from src.analysis.pipeline import _assign_agn_quartiles, _mean_state_inputs
 from src.analysis.statistics import compute_agn_quartile_statistics, compute_composition_statistics, normalize_halo_rates
 from src.io.catalog import _normalise_catalogue, load_subhalo_particle_offsets, subfind_counts
 from src.io.sampling import _select_candidates
+from src.io.results import _save_events
 from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
 from src.io.tracer import lookup_parent_records, scan_parent_to_tracer, scan_tracer_parent_map
 from src.physics.cooling_function import ConstantCoolingFunction
@@ -215,6 +218,18 @@ def test_tracer_scans_parallelize_and_cache_by_snapshot_chunk(tmp_path) -> None:
         parallel_backend="process",
     )
     assert parent_map == {100: 10, 300: 30}
+    columnar_parent_map = scan_tracer_parent_map(
+        base_path,
+        94,
+        np.array([100, 300], dtype=np.uint64),
+        cache_dir=cache_dir,
+        block_size=2,
+        max_workers=2,
+        parallel_backend="process",
+        columnar=True,
+    )
+    np.testing.assert_array_equal(columnar_parent_map["tracer_ids"], np.array([100, 300], dtype=np.uint64))
+    np.testing.assert_array_equal(columnar_parent_map["parent_ids"], np.array([10, 30], dtype=np.uint64))
     records = lookup_parent_records(
         base_path,
         94,
@@ -345,6 +360,108 @@ def test_event_classes_are_complete_and_close() -> None:
     exiting_entry = next(entry for entry in ledger if entry["event"] == "out")
     assert tuple(map(int, entering_entry["state_sequence"])) == tuple(range(90, 96))
     assert tuple(map(int, exiting_entry["state_sequence"])) == tuple(range(94, 100))
+
+    # The production pipeline keeps both lookup products in compact sorted
+    # arrays.  It must produce exactly the same physical classification as the
+    # legacy dictionary representation retained for direct callers.
+    columnar_maps = {}
+    columnar_records = {}
+    for snap in config.snapshots:
+        tracer_ids = np.asarray(sorted(parent_maps[snap]), dtype=np.uint64)
+        columnar_maps[snap] = {
+            "tracer_ids": tracer_ids,
+            "parent_ids": np.asarray([parent_maps[snap][int(value)] for value in tracer_ids], dtype=np.uint64),
+        }
+        particle_ids = np.asarray(sorted(records[snap]), dtype=np.uint64)
+        rows = [records[snap][int(value)] for value in particle_ids]
+        columnar_records[snap] = {
+            "particle_ids": particle_ids,
+            "particle_type": np.asarray([row["particle_type"] for row in rows], dtype=np.int8),
+            "particle_index": np.arange(len(rows), dtype=np.uint64),
+            "bound_subhalo_id": np.full(len(rows), -1, dtype=np.int64),
+            "bound_group_id": np.full(len(rows), -1, dtype=np.int64),
+            "coordinates": np.asarray([row["coordinates"] for row in rows], dtype=float),
+            "sfr": np.asarray([row["sfr"] for row in rows], dtype=float),
+            "internal_energy": np.asarray([row["internal_energy"] for row in rows], dtype=float),
+            "electron_abundance": np.asarray([row["electron_abundance"] for row in rows], dtype=float),
+            "formation_time": np.asarray([row["formation_time"] for row in rows], dtype=float),
+        }
+    columnar_result, columnar_ledger = classify_halo_events(
+        np.array([1, 2, 3, 4, 5, 6], dtype=np.uint64),
+        np.array([7, 8], dtype=np.uint64),
+        parent_maps=columnar_maps,
+        records=columnar_records,
+        states=states,
+        headers=headers,
+        config=config,
+        dt_gyr=0.134,
+    )
+    assert columnar_result["mass_in_closure_error_msun"] == result["mass_in_closure_error_msun"]
+    assert columnar_result["mass_out_closure_error_msun"] == result["mass_out_closure_error_msun"]
+    assert [
+        (entry["TracerID"], entry["rate_class"], entry["other_reason"])
+        for entry in columnar_ledger
+    ] == [
+        (entry["TracerID"], entry["rate_class"], entry["other_reason"])
+        for entry in ledger
+    ]
+
+
+def test_parent_products_use_directional_history_windows(monkeypatch, tmp_path: Path) -> None:
+    """Only tracers needed by each scientific history window are resolved."""
+
+    calls = {}
+
+    def fake_worker(base_path, snap, all_events, cache_dir, block_size, max_workers, parallel_backend, verbose):
+        calls[snap] = np.asarray(all_events, dtype=np.uint64)
+        return snap, {"tracer_ids": calls[snap], "parent_ids": calls[snap]}, {"particle_ids": calls[snap]}
+
+    monkeypatch.setattr(pipeline_module, "_parent_product_worker", fake_worker)
+    config = Phase21Config()
+    pipeline_module._parent_products(
+        [np.array([3, 1], dtype=np.uint64)],
+        [np.array([4, 3], dtype=np.uint64)],
+        config,
+        tmp_path,
+        verbose=False,
+    )
+    for snap in range(90, 94):
+        np.testing.assert_array_equal(calls[snap], np.array([1, 3], dtype=np.uint64))
+    for snap in (94, 95):
+        np.testing.assert_array_equal(calls[snap], np.array([1, 3, 4], dtype=np.uint64))
+    for snap in range(96, 100):
+        np.testing.assert_array_equal(calls[snap], np.array([3, 4], dtype=np.uint64))
+
+
+def test_event_hdf5_derives_endpoint_views_from_sequence(tmp_path: Path) -> None:
+    """Removing duplicate in-memory states must not change the HDF5 contract."""
+
+    import h5py
+
+    path = tmp_path / "events.h5"
+    sequence = {
+        "94": {"phase_state": "hot", "resolved": True},
+        "95": {"phase_state": "cold", "resolved": True},
+    }
+    _save_events(
+        path,
+        [[{
+            "TracerID": np.uint64(2**63 + 7),
+            "event": "in",
+            "anchor_snapshot": 94,
+            "rate_class": "single-in",
+            "other_reason": "",
+            "weight_msun": 1.0,
+            "state_sequence": sequence,
+            "missing_mask": {"94": False, "95": False},
+        }]],
+    )
+    with h5py.File(path, "r") as handle:
+        group = handle["halo_000000"]
+        assert int(group["TracerID"][0]) == 2**63 + 7
+        assert json.loads(group["anchor_state"][0])["phase_state"] == "hot"
+        assert json.loads(group["source_state"][0])["phase_state"] == "hot"
+        assert json.loads(group["target_state"][0])["phase_state"] == "cold"
 
 
 def test_agn_average_physical_inputs_and_cooling() -> None:
