@@ -1,0 +1,14 @@
+name: galaxy-gas-accretion
+channels:
+  - conda-forge
+dependencies:
+  - python>=3.10
+  - numpy>=1.24
+  - matplotlib>=3.7
+  - h5py>=3.8
+  - pandas>=2.0
+  - ipython>=8.0
+  - jupyterlab>=4.0
+  - pytest>=7.4
+
+# The external TNG environment must make `illustris_python` importable.

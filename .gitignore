@@ -1,0 +1,73 @@
+# Operating-system and editor files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python bytecode, caches, coverage and local environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# Local temporary files
+*.tmp
+*.part
+tmp/
+
+# Simulation inputs: raw TNG snapshots are external, reproducible inputs.
+1.8/data/raw/*
+!1.8/data/raw/README.md
+2.1/data/raw/*
+!2.1/data/raw/README.md
+
+# External cooling tables are not source code and can be restored separately.
+1.8/data/external/cooling_tables/*
+!1.8/data/external/cooling_tables/README.md
+2.1/data/external/cooling_tables/*
+!2.1/data/external/cooling_tables/README.md
+
+# Runtime caches are disposable and must not enter version control.
+1.8/data/interim/cache/
+2.1/data/interim/cache/*
+!2.1/data/interim/cache/README.md
+
+# Generated data products. Keep directory documentation, not derived binaries.
+1.8/data/processed/*
+!1.8/data/processed/README.md
+2.1/data/processed/*
+!2.1/data/processed/README.md
+
+# Generated figures, tables and logs. Keep README placeholders.
+1.8/results/figures/*
+!1.8/results/figures/README.md
+2.1/results/figures/*
+!2.1/results/figures/README.md
+1.8/results/tables/*
+!1.8/results/tables/README.md
+2.1/results/tables/*
+!2.1/results/tables/README.md
+1.8/results/logs/*
+!1.8/results/logs/README.md
+2.1/results/logs/*
+!2.1/results/logs/README.md
