@@ -12,7 +12,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.analysis.pipeline import run_phase21
 from src.io.results import save_phase21_result
-from src.physics.cooling_function import LgalCoolingFunction, ConstantCoolingFunction
+from src.physics.cooling_function import LgalCoolingFunction
 from src.plotting import plot_agn_cooling, plot_composition, plot_feedback_before_accretion
 from src.utils.config import Phase21Config
 
@@ -26,7 +26,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--cache-dir", type=Path, default=PROJECT_ROOT / "data" / "interim" / "cache")
     parser.add_argument("--output-dir", type=Path, default=PROJECT_ROOT / "data" / "processed")
     parser.add_argument("--figure-dir", type=Path, default=PROJECT_ROOT / "results" / "figures")
-    parser.add_argument("--constant-cooling", type=float, default=None, help="Use a constant cooling coefficient for synthetic smoke runs")
     parser.add_argument("--state-workers", type=int, default=Phase21Config.state_workers, help="Concurrent halo-state workers")
     parser.add_argument("--state-backend", choices=("serial", "thread", "process"), default=Phase21Config.state_parallel_backend, help="Halo-state concurrency backend")
     parser.add_argument("--rebuild-sample", action="store_true")
@@ -38,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     """Parse arguments, run Phase 2.1, and serialize its result."""
 
     args = _parser().parse_args(argv)
-    cooling = ConstantCoolingFunction(args.constant_cooling) if args.constant_cooling is not None else LgalCoolingFunction.from_directory(args.cooling_table_dir)
+    cooling = LgalCoolingFunction.from_directory(args.cooling_table_dir)
     config = Phase21Config(
         base_path=args.base_path,
         state_workers=args.state_workers,
@@ -52,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         figure_dir = args.figure_dir
         figure_dir.mkdir(parents=True, exist_ok=True)
-        plot_agn_cooling(result["agn_quartile_statistics"], halo_results=result["halo_results"], save_path=figure_dir / "phase21_agn_quartile_cooling.png")
+        plot_agn_cooling(result["agn_quartile_statistics"], halo_results=result["halo_results"], save_path=figure_dir / "phase21_mdot_heat_h15_quartile_cooling.png")
         plot_composition(result["composition_statistics"], direction="in", save_path=figure_dir / "phase21_supply_composition.png")
         plot_composition(result["composition_statistics"], direction="out", save_path=figure_dir / "phase21_feedback_composition.png")
         plot_feedback_before_accretion(result["normalized_statistics"], halo_results=result["halo_results"], save_path=figure_dir / "phase21_feedback_before_accretion.png")

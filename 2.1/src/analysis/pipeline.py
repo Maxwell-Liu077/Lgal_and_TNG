@@ -14,6 +14,7 @@ from ..io.sampling import load_or_build_sample
 from ..io.catalog import load_catalogue_cache, load_subhalo_particle_offsets
 from ..io.state import load_state_snapshot, prepare_halo_states
 from ..io.tracer import lookup_parent_records, reuse_parent_product_subset_caches, scan_parent_to_tracer, scan_tracer_parent_map
+from ..physics.cooling_function import LGAL_TABLE_FILENAMES, LgalCoolingFunction
 from ..physics.feedback import compute_agn_strength
 from ..physics.sam_cooling import compute_isothermal_sam_cooling
 from ..utils.arrays import records_to_arrays
@@ -78,13 +79,24 @@ def _release_process_memory() -> None:
 
 
 def _assign_agn_quartiles(records: list[dict], config: Phase21Config) -> None:
-    """Assign stable near-equal Q1--Q4 labels within each mass bin."""
+    """Assign stable H15-heating Q1--Q4 labels within each mass bin."""
 
     for record in records:
         record["agn_quartile"] = 0
     for bin_index in range(len(config.mass_bin_centers)):
-        positions = [index for index, record in enumerate(records) if record["mass_bin_index"] == bin_index and not np.isnan(record["agn_strength"])]
-        positions.sort(key=lambda index: (records[index]["agn_strength"], records[index]["subfind_id_z99"]))
+        positions = [
+            index
+            for index, record in enumerate(records)
+            if record["mass_bin_index"] == bin_index
+            and np.isfinite(record["mdot_heat_h15_msun_per_yr"])
+            and record["mdot_heat_h15_msun_per_yr"] >= 0.0
+        ]
+        positions.sort(
+            key=lambda index: (
+                records[index]["mdot_heat_h15_msun_per_yr"],
+                records[index]["subfind_id_z99"],
+            )
+        )
         for quartile, group in enumerate(np.array_split(np.asarray(positions, dtype=int), 4), start=1):
             for position in group:
                 records[int(position)]["agn_quartile"] = quartile
@@ -273,7 +285,7 @@ def _mean_state_inputs(states: dict[int, dict], config: Phase21Config) -> dict:
 
 
 def run_phase21(
-    cooling_function,
+    cooling_function: LgalCoolingFunction,
     *,
     config: Phase21Config | None = None,
     cache_dir: str | Path = "data/interim/cache",
@@ -282,6 +294,15 @@ def run_phase21(
 ) -> dict:
     """Run sample selection, state scans, event classification, and statistics."""
 
+    if not isinstance(cooling_function, LgalCoolingFunction) or not cooling_function.source_directory:
+        raise TypeError("Phase 2.1 requires LgalCoolingFunction.from_directory with the published Henriques tables")
+    cooling_table_directory = Path(cooling_function.source_directory)
+    missing_cooling_tables = [
+        name for name in LGAL_TABLE_FILENAMES
+        if not (cooling_table_directory / name).is_file()
+    ]
+    if missing_cooling_tables:
+        raise FileNotFoundError("Missing Henriques cooling tables: " + ", ".join(missing_cooling_tables))
     config = config or Phase21Config()
     started = time.perf_counter()
     headers = _headers(config)
@@ -426,6 +447,10 @@ def run_phase21(
         "state_rejected": state_rejected,
         "other_policy": "other is removed from the valid mutually-exclusive mother set but retained in totals and composition fractions",
         "agn_endpoint_policy": "average Mhot, MBH, R200c, and V200c before computing A_SAM",
+        "agn_quartile_field": "mdot_heat_h15_msun_per_yr",
+        "agn_quartile_order": "Q1 lowest heating rate; Q4 highest heating rate; stable SubfindID tie-break",
+        "cooling_function": "Henriques2015 L-Galaxies published tables",
+        "cooling_table_directory": str(cooling_table_directory),
         "temperature_boundary_log10_K": config.hot_log10_temperature_min,
         "fingerprint": config.fingerprint,
         "fingerprint_payload": config.fingerprint_payload,

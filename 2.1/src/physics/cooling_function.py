@@ -17,26 +17,6 @@ LGAL_LOG10_Z_OVER_ZSUN = np.array([-5.0, -3.0, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5]
 
 
 @dataclass(frozen=True)
-class ConstantCoolingFunction:
-    """Positive constant cooling law for synthetic runs."""
-
-    lambda_erg_cm3_s: float = 1.0e-23
-
-    def __post_init__(self) -> None:
-        """Validate the coefficient."""
-
-        if self.lambda_erg_cm3_s <= 0:
-            raise ValueError("lambda_erg_cm3_s must be positive")
-
-    def __call__(self, temperature_k, metallicity_mass_fraction):
-        """Return the constant coefficient with broadcast shape."""
-
-        temperature, _ = np.broadcast_arrays(temperature_k, metallicity_mass_fraction)
-        result = np.full(temperature.shape, self.lambda_erg_cm3_s, dtype=float)
-        return float(result) if result.ndim == 0 else result
-
-
-@dataclass(frozen=True)
 class LgalCoolingFunction:
     """Bilinear log-space interpolation over Henriques cooling tables."""
 

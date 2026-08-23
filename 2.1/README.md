@@ -123,7 +123,7 @@ $$
 \dot M_{\rm heat,H15}=\frac{2\dot E_{\rm radio}}{V_{200c}^2}.
 $$
 
-定义 AGN 相对强度
+同时保留 AGN 相对强度诊断量
 
 $$
 \mathcal A_{\rm SAM}
@@ -137,7 +137,9 @@ $$
 
 ### 5.3 AGN 强度分类
 
-在每个最终恒星质量箱内部，分别按选定 AGN 强度排序：
+在每个最终恒星质量箱内部，直接按
+$\dot M_{\rm heat,H15}$ 从低到高排序；$\mathcal A_{\rm SAM}$ 仅作为诊断量保存，
+不参与四分位分类：
 
 - Q1：最低 0--25%；
 - Q2：25--50%；
@@ -325,7 +327,7 @@ $(\dot M_{\rm stay,out},\dot M_{\rm recycled,out},\dot M_{\rm other,out})$。
 
 ## 9. 可视化
 
-1. 主图：按 $\mathcal A_{\rm SAM}$ 四分位的四条 $r_{\rm cool}/R_{200c}$ 中位线；副图以零为中位数基线，使用非对称误差棒表示 $P_{16}-P_{50}$ 与 $P_{84}-P_{50}$ 的 1 $\sigma$ 离散度；
+1. 主图：按 $\dot M_{\rm heat,H15}$ 四分位的四条 $r_{\rm cool}/R_{200c}$ 中位线，并保留单晕散点；副图以零为中位数基线，使用非对称误差棒表示 $P_{16}-P_{50}$ 与 $P_{84}-P_{50}$ 的 1 $\sigma$ 离散度；
 2. 中央冷库总供给来源：$\dot M_{\rm first,in}^{\rm eff}$、$\dot M_{\rm recycled,in}^{\rm eff}$、$\dot M_{\rm stay,in}$ 和 `other` 的 100% 堆叠柱形图；
 3. 中央冷库总反馈作用去向：$\dot M_{\rm stay,out}$、$\dot M_{\rm recycled,out}$ 和 `other` 的 100% 堆叠柱形图；
 4. 主图：反馈前吸积率估计 $\dot M_{\rm pf,in}$ 与 $\dot M_{\rm cool,iso}$ 的中位线；副图同样以零为中位数基线，用非对称误差棒展示 $P_{16}-P_{50}$ 与 $P_{84}-P_{50}$，并采用两种归一化方式：$M_{\rm hot}$ 和 $M_{\rm stellar}$。

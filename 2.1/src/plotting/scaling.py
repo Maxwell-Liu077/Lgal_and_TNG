@@ -88,7 +88,7 @@ def plot_agn_cooling(statistics: dict[str, np.ndarray], *, halo_results: dict[st
             label=f"Q{quartile + 1}",
         )
     axis.set_ylabel(r"$\langle r_{\rm cool}/R_{200c}\rangle$")
-    axis.set_title(r"AGN-strength quartiles", loc="left")
+    axis.set_title(r"$\dot M_{\rm heat,H15}$ quartiles", loc="left")
     axis.legend(loc="upper left", bbox_to_anchor=(1.01, 1.0))
     scatter_axis.set_xlabel(r"$\log_{10}(M_\star/M_\odot)$")
     _style_scatter_axis(scatter_axis, r"$1\sigma$ scatter")

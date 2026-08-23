@@ -21,7 +21,6 @@ from src.io.sampling import _select_candidates
 from src.io.results import _save_events
 from src.io.state import _save_state, build_snapshot_state, load_state_snapshot, state_cache_is_valid
 from src.io.tracer import _fingerprint, lookup_parent_records, reuse_parent_product_subset_caches, scan_parent_to_tracer, scan_tracer_parent_map
-from src.physics.cooling_function import ConstantCoolingFunction
 from src.physics.feedback import compute_agn_strength
 from src.physics.sam_cooling import compute_isothermal_sam_cooling
 from src.plotting import plot_agn_cooling, plot_composition, plot_feedback_before_accretion
@@ -549,7 +548,7 @@ def test_agn_average_physical_inputs_and_cooling() -> None:
         z_hot_mass_fraction=0.01,
         m200c_msun=1.0e12,
         r200c_pkpc=100.0,
-        cooling_function=ConstantCoolingFunction(),
+        cooling_function=lambda temperature_k, metallicity: 1.0e-23,
     )
     assert cooling["rate_sam_isothermal_msun_per_yr"] >= 0
     strength = compute_agn_strength(m_hot_msun=1.0e10, m_bh_msun=1.0e8, r200c_pkpc=100.0, v200c_km_s=200.0)
@@ -573,16 +572,16 @@ def test_agn_average_physical_inputs_and_cooling() -> None:
     }
 
 
-def test_agn_quartiles_keep_zero_bh_and_stable_ties() -> None:
-    """-inf remains Q1; NaN is excluded; SubfindID resolves equal values."""
+def test_agn_quartiles_use_h15_heating_and_stable_ties() -> None:
+    """Zero heating remains Q1; NaN is excluded; SubfindID breaks ties."""
 
     config = Phase21Config()
     records = [
-        {"mass_bin_index": 0, "agn_strength": -np.inf, "subfind_id_z99": 40},
-        {"mass_bin_index": 0, "agn_strength": 1.0, "subfind_id_z99": 20},
-        {"mass_bin_index": 0, "agn_strength": 1.0, "subfind_id_z99": 10},
-        {"mass_bin_index": 0, "agn_strength": np.nan, "subfind_id_z99": 5},
-        {"mass_bin_index": 0, "agn_strength": 2.0, "subfind_id_z99": 30},
+        {"mass_bin_index": 0, "agn_strength": 99.0, "mdot_heat_h15_msun_per_yr": 0.0, "subfind_id_z99": 40},
+        {"mass_bin_index": 0, "agn_strength": 0.0, "mdot_heat_h15_msun_per_yr": 1.0, "subfind_id_z99": 20},
+        {"mass_bin_index": 0, "agn_strength": 0.0, "mdot_heat_h15_msun_per_yr": 1.0, "subfind_id_z99": 10},
+        {"mass_bin_index": 0, "agn_strength": -99.0, "mdot_heat_h15_msun_per_yr": np.nan, "subfind_id_z99": 5},
+        {"mass_bin_index": 0, "agn_strength": -99.0, "mdot_heat_h15_msun_per_yr": 2.0, "subfind_id_z99": 30},
     ]
     _assign_agn_quartiles(records, config)
     by_subfind = {record["subfind_id_z99"]: record["agn_quartile"] for record in records}
