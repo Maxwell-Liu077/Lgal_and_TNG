@@ -1,0 +1,19 @@
+# IllustrisTNG I/O and scientific analysis
+illustris_python==1.1.1
+numpy>=2.0,<3
+scipy>=1.13,<2
+h5py>=3.11,<4
+pandas>=2.2,<3
+astropy>=6.1,<8
+matplotlib>=3.8,<4
+numba>=0.60,<1
+
+# API access and analysis ergonomics
+requests>=2.32,<3
+tqdm>=4.66,<5
+ipython>=8.26,<10
+jupyterlab>=4.2,<5
+ipykernel>=6.29,<8
+
+# Tests
+pytest>=8.2,<10
