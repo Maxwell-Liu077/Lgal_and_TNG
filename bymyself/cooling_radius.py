@@ -82,11 +82,14 @@ def LgalCoolingFunction(T_hot, Z_hot, cooling_tables):
 def compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h):
     numHalo = halo_pos.shape[0]
 
+    G = 4.30091e-6 # G: kpc (km/s)^2 / Msun
+
     M_hot = np.zeros(numHalo)
     T_hot = np.full(numHalo, np.nan)
     Z_hot = np.full(numHalo, np.nan)
     t_dyn = np.full(numHalo, np.nan)
     T_200c = np.full(numHalo, np.nan)
+    V_200c = np.full(numHalo, np.nan)
     R200c_cm = np.full(numHalo, np.nan)
     HaloFlag = np.ones(numHalo, dtype=np.ubyte)
 
@@ -110,13 +113,17 @@ def compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_20
         #only choose gas cells within R200c
         indices_of_halo = indices_of_halo[np.where(halo_gas_dist <= halo_R_200c[i])[0]]
 
+        if indices_of_halo.size == 0:
+            HaloFlag[i] = 0
+            continue
+
         R200c_cm[i] = halo_R_200c[i] * a / h * kpc_cm
         M_hot[i] = np.sum(gas_masses[indices_of_halo]) * 1.0e10 * msun_g / h
         T_hot[i] = np.sum(gas_temp[indices_of_halo] * gas_masses[indices_of_halo]) / np.sum(gas_masses[indices_of_halo])
         Z_hot[i] = np.sum(gas_mental[indices_of_halo] * gas_masses[indices_of_halo]) / np.sum(gas_masses[indices_of_halo])
-        V_200c = iF.V200c(halo_M_200c[i], halo_R_200c[i], a)
-        t_dyn[i] = R200c_cm[i] / (V_200c * km_cm)
-        T_200c[i] = 35.9 * V_200c ** 2
+        V_200c[i] = np.sqrt((G * 1.0e10 * halo_M_200c[i]) / (a * halo_R_200c[i]))
+        t_dyn[i] = R200c_cm[i] / (V_200c[i] * km_cm)
+        T_200c[i] = 35.9 * V_200c[i] ** 2
 
     return T_hot, Z_hot, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag
 
@@ -129,7 +136,7 @@ def compute_lamda(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M
     return lamda
 
 @njit(parallel=True)
-def compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, HaloFlag, h, a):
+def compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, HaloFlag, h, a):
     n_halo = M_hot.shape[0]
     cr = np.full(n_halo, np.nan)
 
@@ -146,11 +153,11 @@ def compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, HaloFlag, h, a
         denominator = (6.0 * np.pi * mu * m_H * k_B * T_200c[i] * R200c_cm[i])
 
         r_cool_cm = np.sqrt(numerator / denominator)
-        cr[i] = r_cool_cm / kpc_cm * h / a
+        cr[i] = r_cool_cm / kpc_cm * h / a / halo_R_200c[i]
 
     return cr
 
-def cooling_radius(basePath, snap, ):
+def cooling_radius(basePath, snap):
     start = time.time()
 
     header = il.groupcat.loadHeader(basePath, snap)
@@ -158,7 +165,7 @@ def cooling_radius(basePath, snap, ):
     a = header["Time"]
     h = header["HubbleParam"]
 
-    gas = il.snapshot.loadSubset(basePath, snap, 'gas', fields = [["ParticleIDs", "Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"]])
+    gas = il.snapshot.loadSubset(basePath, snap, 'gas', fields = ["Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"])
     gas_pos = gas['Coordinates'][:,:]
     gas_masses = gas['Masses'][:]
     gas_utherm = gas["InternalEnergy"][:]
@@ -187,22 +194,31 @@ def cooling_radius(basePath, snap, ):
     halo_R_200c = halos["Group_R_Crit200"]
     halo_M_200c = halos["Group_M_Crit200"]
 
-    gasInHaloOffset = np.cumsum(numGasInHalo, dtype = np.int64)
+    gasInHaloOffset = np.concatenate(([0], np.cumsum(numGasInHalo[:-1], dtype=np.int64)))
 
     end_loading = time.time()
     print('Loading took ',np.round(end_loading - start,3),' seconds.')
 
     lamda = compute_lamda(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
     _, _, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag = compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
-    cooling_radius = compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, HaloFlag, h, a)
+    cr = compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, HaloFlag, h, a)
 
     end_calc = time.time()
     print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
 
     result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+    result_dir.mkdir(parents=True, exist_ok=True)
     output_file = result_dir / f"cooling_radius_{snap}.hdf5"
     with h5py.File(output_file, "w") as f:
-        f.create_dataset("cooling_radius_ckpch", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
+        f.create_dataset("cooling_radius", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
 
-    return cooling_radius
+    return cr
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        raise SystemExit("Usage: python cooling_radius.py SNAP")
+
+    snap = int(sys.argv[1])
+    basePath = "/public/share/chenhouzun/TNG50-1/output/"
+    cooling_radius(basePath, snap)

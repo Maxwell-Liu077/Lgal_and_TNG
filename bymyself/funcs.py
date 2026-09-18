@@ -14,7 +14,7 @@ def dist(x,y,boxSize):
     return r
 
 # 一次性计算一个点 x 到多个三维点 y 的周期性距离
-@njit(parallel = True)
+@njit
 def norm_axis1(arr):
     assert len(arr.shape) == 2
     norms = np.empty(arr.shape[0], dtype = arr.dtype)
@@ -22,7 +22,7 @@ def norm_axis1(arr):
         norms[i] = np.sqrt(np.sum(arr[i,:]*arr[i,:]))
     return norms
 
-@njit(parallel = True)
+@njit
 def dist_vector_nb(x,y,boxSize):
     assert x.shape == (3,), 'x must be of shape (3,)'
     assert y.shape[1] == 3, 'y must be an array of 3-vectors'
@@ -50,3 +50,25 @@ def dist_vector_nb(x,y,boxSize):
         r[i] = np.sqrt(dx * dx + dy * dy + dz * dz)
 
     return r
+
+# 按照 xVal 分箱，然后计算每个分箱中 yVal 的：中位数；下百分位数；上百分位数
+def binData_med(xVal, yVal, numBins=4, lower = 16, upper = 84):
+    minVal = np.min(xVal)
+    maxVal = np.max(xVal)
+
+    binWidth = (maxVal - minVal) / numBins
+
+    xMed = np.full(numBins, np.nan)
+    yMed = np.full(numBins, np.nan)
+    ylow = np.full(numBins, np.nan)
+    yup = np.full(numBins, np.nan)
+
+    for j in range(numBins):
+        relInd = np.where( (xVal >= minVal + j*binWidth) & (xVal < minVal + (j+1)*binWidth) )[0]
+        if(relInd.size>0):
+            xMed[j] = np.nanmedian(xVal[relInd])
+            yMed[j] = np.nanmedian(yVal[relInd])
+            ylow[j] = np.nanpercentile(yVal[relInd],lower)
+            yup[j] = np.nanpercentile(yVal[relInd],upper)
+
+    return xMed, yMed, ylow, yup

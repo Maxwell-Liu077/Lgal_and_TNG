@@ -1,4 +1,5 @@
 import numpy as np
+import illustris_python as il
 
 def utherm_to_temp(utherm, nelec):
     hydrogen_massfrac = 0.76 # approximate
@@ -23,8 +24,9 @@ def utherm_to_temp(utherm, nelec):
 
     return temp.astype('float32')
 
-def V200c(M_200c, R_200c, a):
-    G = 4.30091e-6 # G: kpc (km/s)^2 / Msun
-    V_200c = np.sqrt((G * 1.0e10 * M_200c) / (a * R_200c))
-
-    return V_200c.astype('float32')
+# 读取 100 个 snapshot 的红移，并按 snapshot 99 → 0 的顺序保存到数组中
+def give_z_array(basePath):
+    z = np.zeros(100)
+    for i in range(99,-1,-1):
+        z[99-i] = il.groupcat.loadHeader(basePath,i)['Redshift']
+    return z
