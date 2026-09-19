@@ -20,11 +20,8 @@ def load_mpb(basePath, start_snap, target_snap):
     mpb_halos = np.full((numHalo, numSnap), -1, dtype=np.int64)
 
     mpb_halos[:, 0] = np.arange(numHalo, dtype=np.int64)
-    valid = np.zeros(numHalo, dtype=bool)
-    valid_halo = np.flatnonzero(
-        (first >= 0) & (first < flags.size)
-    )
-    valid[valid_halo] = flags[first[valid_halo]]
+    valid = np.zeros(numHalo, dtype = bool)
+    valid[np.where(first >= 0)[0]] = flags[first[np.where(first >= 0)[0]]]
 
     subhalo_to_halo = {}
 
@@ -36,14 +33,8 @@ def load_mpb(basePath, start_snap, target_snap):
         if not valid[halo]:
             continue
 
-        central_sub = int(first[halo])
-        tree = il.sublink.loadTree(
-            basePath,
-            start_snap,
-            central_sub,
-            onlyMPB=True,
-            fields=["SnapNum", "SubfindID"],
-        )
+        central_sub = first[halo]
+        tree = il.sublink.loadTree(basePath, start_snap, central_sub, onlyMPB = True, fields = ["SnapNum", "SubfindID"])
 
         if tree is None:
             continue
@@ -55,7 +46,7 @@ def load_mpb(basePath, start_snap, target_snap):
                 continue
 
             column = start_snap - branch_snap
-            group_ids = subhalo_to_halo[int(branch_snap)]
+            group_ids = subhalo_to_halo[branch_snap]
 
             if 0 <= branch_sub < group_ids.size:
                 mpb_halos[halo, column] = group_ids[branch_sub]
