@@ -213,7 +213,7 @@ def cooling_radius(basePath, snap):
         f.create_dataset("cooling_radius", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
 
-    return cr
+    return cr, M_hot, halo_R_200c, t_dyn, HaloFlag
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
