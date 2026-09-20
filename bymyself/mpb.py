@@ -18,10 +18,14 @@ def load_mpb(basePath, start_snap, target_snap):
     numHalo = first.shape[0]
     numSnap = snaps.shape[0]
     mpb_halos = np.full((numHalo, numSnap), -1, dtype=np.int64)
+    mpb_subhalos = np.full((numHalo, numSnap), -1, dtype=np.int64)
 
     mpb_halos[:, 0] = np.arange(numHalo, dtype=np.int64)
+    mpb_subhalos[:, 0] = first
+
     valid = np.zeros(numHalo, dtype = bool)
-    valid[np.where(first >= 0)[0]] = flags[first[np.where(first >= 0)[0]]]
+    valid_halo = ((first >= 0) & (first < flags.size))
+    valid[valid_halo] = flags[first[valid_halo]]
 
     subhalo_to_halo = {}
 
@@ -48,8 +52,11 @@ def load_mpb(basePath, start_snap, target_snap):
             column = start_snap - branch_snap
             group_ids = subhalo_to_halo[branch_snap]
 
-            if 0 <= branch_sub < group_ids.size:
-                mpb_halos[halo, column] = group_ids[branch_sub]
+            if not(0 <= branch_sub < group_ids.size):
+                continue
+
+            mpb_halos[halo, column] = group_ids[branch_sub]
+            mpb_subhalos[halo, column] = branch_sub
 
     end = time.time()
     print('Loading took ',np.round(end - start,3),' seconds.')
@@ -59,8 +66,9 @@ def load_mpb(basePath, start_snap, target_snap):
     output_file = result_dir / f"mpb_halos.hdf5"
     with h5py.File(output_file, "w") as f:
         f.create_dataset("mpb_halos", data=mpb_halos, compression="gzip", compression_opts=4)
+        f.create_dataset("mpb_subhalos", data=mpb_subhalos, compression="gzip", compression_opts=4)
 
-    return mpb_halos
+    return {"mpb_halos": mpb_halos, "mpb_subhalos": mpb_subhalos, "snap_numbers": snaps}
 
 if __name__ == "__main__":
     start_snap = int(sys.argv[1])

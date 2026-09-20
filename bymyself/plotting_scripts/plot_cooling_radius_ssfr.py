@@ -19,12 +19,12 @@ header = il.groupcat.loadHeader(basePath, 99)
 h = header['HubbleParam']
 
 # set snapshots to plot
-snaps = np.array([99,67,33])
+snaps = np.array([99])
 z = iF.give_z_array(basePath)
 z_snaps = np.flip(z)[snaps]
 
 # specify directory to save plots
-dirname = 'pics/cooling_radius'
+dirname = 'pics/ssfr_cooling_radius'
 os.makedirs(dirname, exist_ok=True)
 
 style = 'solid'
@@ -37,18 +37,37 @@ for i in range(0,snaps.size):
     del groups
 
     assert isfile(f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snaps[i]}.hdf5'), 'Cooling radius file does not exist!'
-    file = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snaps[i]}.hdf5'
-    f = h5py.File(file,'r')
-    haloFlag = f['halo_flag'][:]
-    cr = f['cooling_radius'][:]
-    cr = cr[np.nonzero(haloFlag)[0]]
-    f.close()
+    assert isfile(f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/ssfr_classification_{snaps[i]}.hdf5'), 'SSFR classification file does not exist!'
+    cooling_file = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snaps[i]}.hdf5'
+    class_file = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/ssfr_classification_{snaps[i]}.hdf5'
+    f1 = h5py.File(cooling_file,'r')
+    haloFlag = np.asarray(f1["halo_flag"][:], dtype=bool)
+    cr = f1['cooling_radius'][:]
+    f1.close()
 
-    if snaps[i] in snaps:
-        masses = np.log10(group_masses[np.nonzero(haloFlag)[0]])
-        xmed, ymed, y16, y84 = funcs.binData_med(masses, cr[:], 25)
-        ax.plot(xmed, ymed, color = 'C'+str(i), linestyle = style)
-        ax.fill_between(xmed, y16, y84, alpha = 0.2)
+    f2 = h5py.File(class_file,'r')
+    class_halo_ids = np.asarray(f2["halo_id"][:], dtype=np.int64)
+    class_code = np.asarray(f2["class_code"][:], dtype=np.int8)
+    f2.close()
+
+    class_by_halo = np.full(group_masses.size, -1, dtype=np.int8)
+    valid_ids = ((class_halo_ids >= 0) & (class_halo_ids < group_masses.size))
+    class_by_halo[class_halo_ids[valid_ids]] = class_code[valid_ids]
+
+    class_info = {0: ("Starburst", "#fde725"), 1: ("Main Sequence", "#35b779"), 2: ("Transition", "#31688e"), 3: ("Quenched", "#440154")}
+
+    for code, (label, color) in class_info.items():
+        mask = haloFlag & (class_by_halo == code) & np.isfinite(group_masses) & np.isfinite(cr) & (group_masses > 0) & (cr > 0)
+        number = np.count_nonzero(mask)
+        if number < 5:
+            print(f"{label}: only {number} valid halos, skip plotting.")
+            continue
+
+        x = np.log10(group_masses[mask])
+        y = cr[mask]
+        xmed, ymed, _, _ = funcs.binData_med(x, y, 25)
+        ax.plot(xmed, ymed, color=color, linestyle = style)
+
 
 rec_dwarf = Rectangle((10.8, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
 ax.add_patch(rec_dwarf)
@@ -82,13 +101,14 @@ ax.grid(which = 'major',axis = 'y')
 ax.set_xticks([11,12,13,14])
 ax.set_xticklabels([11,12,13,14])
 
-blue = mpatches.Patch(color='C0', linestyle = 'solid', label = f'z = {z_snaps[0]:.1f}')
-orange = mpatches.Patch(color='C1', linestyle = 'solid', label = f'z = {z_snaps[1]:.1f}')
-green = mpatches.Patch(color='C2', linestyle = 'solid', label = f'z = {z_snaps[2]:.1f}')
+yellow = mpatches.Patch(color="#fde725", linestyle = 'solid', label = "Starburst")
+green = mpatches.Patch(color="#35b779", linestyle = 'solid', label = "Main Sequence")
+blue = mpatches.Patch(color="#31688e", linestyle = 'solid', label = "Transition")
+purple = mpatches.Patch(color="#440154", linestyle = 'solid', label = "Quenched")
 
-legend = plt.legend(handles=[blue,orange,green], ncol=1, loc = 'upper left') # ncol=1：图例分成一列
+legend = plt.legend(handles=[yellow,green,blue,purple], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
 
 ax.set_xlabel(r'halo mass [$\log\,\rm{M}_\odot$]')
 ax.set_ylabel(r'Cooling radius $R_{\rm cr}$ [$R_{\rm 200c}$]')
 fig.tight_layout() # 自动调整图中的间距
-plt.savefig(dirname + '/cr_vs_mass_' + what_to_plot + f'_50-1.pdf',format='pdf')
+plt.savefig(dirname + '/ssfr_cr_vs_mass_' + what_to_plot + f'_50-1.pdf',format='pdf')
