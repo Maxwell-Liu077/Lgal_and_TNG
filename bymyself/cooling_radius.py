@@ -186,7 +186,8 @@ def cooling_radius(basePath, snap):
     cold = np.where(gas_log10_temp <= 4.5)[0]
     gas_state[cold] = 1
 
-    del sf, cold, gas
+    # These arrays are no longer needed after the gas-state classification.
+    del sf, cold, gas, gas_utherm, gas_nelec, gas_log10_temp, non_sf
 
     halos = il.groupcat.loadHalos(basePath, snap, fields = ["GroupLenType", "GroupPos", "Group_R_Crit200", "Group_M_Crit200"])
     numGasInHalo = halos["GroupLenType"][:, 0]
@@ -213,7 +214,20 @@ def cooling_radius(basePath, snap):
         f.create_dataset("cooling_radius", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
 
-    return cr, M_hot, halo_R_200c, t_dyn, HaloFlag
+    result = (cr, M_hot, halo_R_200c, t_dyn, HaloFlag)
+
+    # Release large intermediate arrays before returning.  The arrays in
+    # ``result`` stay alive because the tuple keeps references to them.
+    del header, halos
+    del gas_pos, gas_masses, gas_mental
+    del gas_state, gas_temp
+    del num_gas, numGasInHalo, gasInHaloOffset
+    del halo_pos, halo_M_200c
+    del lamda, T_200c, R200c_cm, cr, M_hot, halo_R_200c, t_dyn, HaloFlag
+    del boxSize, a, h, result_dir, output_file
+    del start, end_loading, end_calc
+
+    return result
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
