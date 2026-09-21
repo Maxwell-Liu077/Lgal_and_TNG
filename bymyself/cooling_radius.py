@@ -78,63 +78,6 @@ def LgalCoolingFunction(T_hot, Z_hot, cooling_tables):
 
     return float(result) if result.ndim == 0 else result
 
-@njit(parallel = True)
-def compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h):
-    numHalo = halo_pos.shape[0]
-
-    G = 4.30091e-6 # G: kpc (km/s)^2 / Msun
-
-    M_hot = np.zeros(numHalo)
-    T_hot = np.full(numHalo, np.nan)
-    Z_hot = np.full(numHalo, np.nan)
-    t_dyn = np.full(numHalo, np.nan)
-    T_200c = np.full(numHalo, np.nan)
-    V_200c = np.full(numHalo, np.nan)
-    R200c_cm = np.full(numHalo, np.nan)
-    HaloFlag = np.ones(numHalo, dtype=np.ubyte)
-
-    kpc_cm = 3.085677581491367e21
-    km_cm = 1.0e5
-    msun_g = 1.98847e33
-
-    for i in nb.prange(numHalo):
-        indices_of_halo = np.arange(gasInHaloOffset[i], gasInHaloOffset[i] + numGasInHalo[i])
-
-        #only choose hot gas cells
-        indices_of_halo = indices_of_halo[gas_state[indices_of_halo] == 0]
-
-        if indices_of_halo.shape[0] == 0:
-            HaloFlag[i] = 0
-            continue
-
-        halo_gas_pos = gas_pos[indices_of_halo]
-        halo_gas_dist = funcs.dist_vector_nb(halo_pos[i], halo_gas_pos, boxSize)
-
-        #only choose gas cells within R200c
-        indices_of_halo = indices_of_halo[np.where(halo_gas_dist <= halo_R_200c[i])[0]]
-
-        if indices_of_halo.size == 0:
-            HaloFlag[i] = 0
-            continue
-
-        R200c_cm[i] = halo_R_200c[i] * a / h * kpc_cm
-        M_hot[i] = np.sum(gas_masses[indices_of_halo]) * 1.0e10 * msun_g / h
-        T_hot[i] = np.sum(gas_temp[indices_of_halo] * gas_masses[indices_of_halo]) / np.sum(gas_masses[indices_of_halo])
-        Z_hot[i] = np.sum(gas_mental[indices_of_halo] * gas_masses[indices_of_halo]) / np.sum(gas_masses[indices_of_halo])
-        V_200c[i] = np.sqrt((G * 1.0e10 * halo_M_200c[i]) / (a * halo_R_200c[i]))
-        t_dyn[i] = R200c_cm[i] / (V_200c[i] * km_cm)
-        T_200c[i] = 35.9 * V_200c[i] ** 2
-
-    return T_hot, Z_hot, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag
-
-def compute_lamda(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h):
-    cooling_tables = CoolingTableLoader()
-
-    T_hot, Z_hot, _,  _, _, _, _ = compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
-    lamda = LgalCoolingFunction(T_hot, Z_hot, cooling_tables)
-
-    return lamda
-
 @njit(parallel=True)
 def compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, HaloFlag, h, a):
     n_halo = M_hot.shape[0]
@@ -157,6 +100,66 @@ def compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, H
 
     return cr
 
+def iter_gas_chunks(basePath, snap):
+    snap_dir = Path(basePath) / f"snapdir_{snap:03d}"
+    files = sorted(snap_dir.glob(f"snap_{snap:03d}.*.hdf5"), key=lambda p: int(p.stem.split(".")[-1]))
+
+    global_start = 0
+
+    fields = ["Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"]
+
+    for filename in files:
+        with h5py.File(filename, "r") as f:
+            n_gas = int(f["Header"].attrs["NumPart_ThisFile"][0])
+            part = f["PartType0"]
+
+            chunk = {field: part[field].astype("f4")[:] for field in fields}
+
+        yield global_start, n_gas, chunk
+        global_start += n_gas
+
+@njit
+def accumulate_gas_chunk(chunk_start, gas_pos, gas_mass, gas_sfr, gas_temp, gas_metal, gas_offset, gas_end, halo_pos, halo_R_200c, boxSize, mass_factor, M_hot, MT_hot, MZ_hot):
+    chunk_end = chunk_start + gas_mass.shape[0]
+    num_halo = gas_offset.shape[0]
+    temp_limit = 10.0 ** 4.5
+
+    halo = np.searchsorted(gas_end, chunk_start, side="right")
+
+    while halo < num_halo and gas_offset[halo] < chunk_end:
+        start = max(gas_offset[halo], chunk_start)
+        end = min(gas_end[halo], chunk_end)
+
+        if end > start and halo_R_200c[halo] > 0:
+            local_start = start - chunk_start
+            local_end = end - chunk_start
+
+            halo_gas_pos = gas_pos[local_start:local_end]
+            halo_gas_dist = funcs.dist_vector_nb(halo_pos[halo], halo_gas_pos, boxSize)
+
+            for local_index in range(halo_gas_dist.shape[0]):
+                j = local_start + local_index
+
+                if gas_sfr[j] != 0.0:
+                    continue
+
+                if not np.isfinite(gas_temp[j]):
+                    continue
+
+                if not np.isfinite(gas_metal[j]):
+                    continue
+
+                if gas_temp[j] <= temp_limit:
+                    continue
+
+                mass_g = gas_mass[j] * mass_factor
+
+                M_hot[halo] += mass_g
+                MT_hot[halo] += mass_g * gas_temp[j]
+                MZ_hot[halo] += mass_g * gas_metal[j]
+
+        halo += 1
+
 def cooling_radius(basePath, snap):
     start = time.time()
 
@@ -165,47 +168,88 @@ def cooling_radius(basePath, snap):
     a = header["Time"]
     h = header["HubbleParam"]
 
-    gas = il.snapshot.loadSubset(basePath, snap, 'gas', fields = ["Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity"])
-    gas_pos = gas['Coordinates'][:,:]
-    gas_masses = gas['Masses'][:]
-    gas_utherm = gas["InternalEnergy"][:]
-    gas_nelec = gas["ElectronAbundance"][:]
-    gas_mental = gas["GFM_Metallicity"]
+    halos = il.groupcat.loadHalos(basePath, snap, fields=["GroupLenType", "GroupPos", "Group_R_Crit200", "Group_M_Crit200"])
+    numGasInHalo = np.asarray(halos["GroupLenType"][:, 0], dtype=np.int64)
+    halo_pos = np.asarray(halos["GroupPos"], dtype=np.float32)
+    halo_R_200c = np.asarray(halos["Group_R_Crit200"], dtype=np.float32)
+    halo_M_200c = np.asarray(halos["Group_M_Crit200"], dtype=np.float32)
 
-    num_gas = gas_masses.shape[0]
+    gas_offset = np.concatenate(([0], np.cumsum(numGasInHalo[:-1], dtype=np.int64)))
+    gas_end = gas_offset + numGasInHalo
+    num_halo = numGasInHalo.shape[0]
 
-    sf = np.nonzero(gas['StarFormationRate'])[0]
-    gas_state = np.zeros(num_gas, dtype = np.ubyte)
-    gas_state[sf] = 1
+    M_hot = np.zeros(num_halo, dtype=np.float64)
+    MT_hot = np.zeros(num_halo, dtype=np.float64)
+    MZ_hot = np.zeros(num_halo, dtype=np.float64)
 
-    non_sf = gas_state == 0
-    gas_temp = np.full(num_gas, np.nan, dtype = np.float32)
-    gas_temp[non_sf] = iF.utherm_to_temp(gas_utherm[non_sf], gas_nelec[non_sf])
+    msun_g = 1.98847e33
+    mass_factor = 1.0e10 * msun_g / h
 
-    gas_log10_temp = np.log10(gas_temp)
-    cold = np.where(gas_log10_temp <= 4.5)[0]
-    gas_state[cold] = 1
+    global_start = 0    
 
-    # These arrays are no longer needed after the gas-state classification.
-    del sf, cold, gas, gas_utherm, gas_nelec, gas_log10_temp, non_sf
+    end_loading_1 = time.time()
+    print('Loading halos took ',np.round(end_loading_1 - start,3),' seconds.')
+    print("Start reading gas chunks")
+    for chunk_start, n_gas, chunk in iter_gas_chunks(basePath, snap):
+        gas_pos = chunk["Coordinates"]
+        gas_mass = chunk["Masses"]
+        gas_sfr = chunk["StarFormationRate"]
+        gas_utherm = chunk["InternalEnergy"]
+        gas_nelec = chunk["ElectronAbundance"]
+        gas_metal = chunk["GFM_Metallicity"]
 
-    halos = il.groupcat.loadHalos(basePath, snap, fields = ["GroupLenType", "GroupPos", "Group_R_Crit200", "Group_M_Crit200"])
-    numGasInHalo = halos["GroupLenType"][:, 0]
-    halo_pos = halos["GroupPos"]
-    halo_R_200c = halos["Group_R_Crit200"]
-    halo_M_200c = halos["Group_M_Crit200"]
+        non_sf = gas_sfr == 0.0
 
-    gasInHaloOffset = np.concatenate(([0], np.cumsum(numGasInHalo[:-1], dtype=np.int64)))
+        gas_temp = np.full(n_gas, np.nan, dtype=np.float32)        
+        gas_temp[non_sf] = iF.utherm_to_temp(gas_utherm[non_sf], gas_nelec[non_sf])
 
-    end_loading = time.time()
-    print('Loading took ',np.round(end_loading - start,3),' seconds.')
+        accumulate_gas_chunk(chunk_start, gas_pos, gas_mass, gas_sfr, gas_temp, gas_metal, gas_offset, gas_end, halo_pos, halo_R_200c, boxSize, mass_factor, M_hot, MT_hot, MZ_hot)
 
-    lamda = compute_lamda(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
-    _, _, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag = compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
+        global_start += n_gas
+
+        del chunk, gas_pos, gas_mass, gas_sfr, gas_utherm, gas_nelec, gas_metal, gas_temp, non_sf
+
+    end_loading_2 = time.time()
+    print('Reading gas chunks took ',np.round(end_loading_2 - end_loading_1,3),' seconds.')
+
+    expected_gas = int(numGasInHalo.sum())
+    if global_start != expected_gas:
+        raise ValueError(f"Gas count mismatch: chunks={global_start}, "f"halo catalog={expected_gas}")
+
+    valid = (M_hot > 0) & np.isfinite(halo_R_200c) & (halo_R_200c > 0) & np.isfinite(halo_M_200c) & (halo_M_200c > 0)
+
+    T_hot = np.full(num_halo, np.nan)
+    Z_hot = np.full(num_halo, np.nan)
+
+    T_hot[valid] = MT_hot[valid] / M_hot[valid]
+    Z_hot[valid] = MZ_hot[valid] / M_hot[valid]      
+
+    HaloFlag = valid.astype(np.ubyte)
+
+    G = 4.30091e-6
+    kpc_cm = 3.085677581491367e21
+    km_cm = 1.0e5
+
+    R200c_cm = np.full(num_halo, np.nan)
+    V_200c = np.full(num_halo, np.nan)
+    T_200c = np.full(num_halo, np.nan)
+    t_dyn = np.full(num_halo, np.nan)
+
+    R200c_cm[valid] = halo_R_200c[valid] * a / h * kpc_cm
+    V_200c[valid] = np.sqrt(G * 1.0e10 * halo_M_200c[valid] / (a * halo_R_200c[valid]))
+    T_200c[valid] = 35.9 * V_200c[valid] ** 2
+    t_dyn[valid] = R200c_cm[valid] / (V_200c[valid] * km_cm)
+
+    cooling_tables = CoolingTableLoader()
+
+    end_loading_3 = time.time()
+    print('Loading took ',np.round(end_loading_3 - start,3),' seconds.')
+
+    lamda = LgalCoolingFunction(T_hot, Z_hot, cooling_tables)
     cr = compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, HaloFlag, h, a)
 
     end_calc = time.time()
-    print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
+    print('Computing took ',np.round(end_calc - end_loading_3,3),' seconds.')
 
     result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -215,18 +259,6 @@ def cooling_radius(basePath, snap):
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
 
     result = (cr, M_hot, halo_R_200c, t_dyn, HaloFlag)
-
-    # Release large intermediate arrays before returning.  The arrays in
-    # ``result`` stay alive because the tuple keeps references to them.
-    del header, halos
-    del gas_pos, gas_masses, gas_mental
-    del gas_state, gas_temp
-    del num_gas, numGasInHalo, gasInHaloOffset
-    del halo_pos, halo_M_200c
-    del lamda, T_200c, R200c_cm, cr, M_hot, halo_R_200c, t_dyn, HaloFlag
-    del boxSize, a, h, result_dir, output_file
-    del start, end_loading, end_calc
-
     return result
 
 if __name__ == "__main__":
