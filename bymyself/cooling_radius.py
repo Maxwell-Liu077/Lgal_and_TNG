@@ -221,8 +221,6 @@ def cooling_radius(basePath, snap):
         f.create_dataset("cooling_radius", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
 
-    result = (cr, M_hot, halo_R_200c, t_dyn, HaloFlag)
-
     # Release only large arrays that are no longer needed.  Arrays included
     # in ``result`` are intentionally kept alive by the returned tuple.
     del halos
@@ -232,7 +230,7 @@ def cooling_radius(basePath, snap):
     del numGasInHalo, gasInHaloOffset
     del T_hot, Z_hot, lamda, T_200c, R200c_cm
 
-    return result
+    return 0
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
