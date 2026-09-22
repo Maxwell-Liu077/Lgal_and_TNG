@@ -3,3 +3,30 @@
 __pycache__/
 *.py[cod]
 .DS_Store
+
+# Local data and generated products.
+# Keep large TNG/catalogue files out of version control.
+data/
+pics/
+results/
+logs/
+cache/
+caches/
+
+# Common scientific data and runtime cache formats.
+*.hdf5
+*.h5
+*.hdf
+*.npy
+*.npz
+*.pkl
+*.pickle
+*.joblib
+*.parquet
+
+# Cluster and local runtime logs.
+slurm-*.out
+jupyter-*.out
+jupyter-*.err
+*.log
+

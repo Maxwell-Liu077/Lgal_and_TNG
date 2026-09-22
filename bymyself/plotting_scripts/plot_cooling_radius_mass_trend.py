@@ -19,12 +19,12 @@ header = il.groupcat.loadHeader(basePath, 99)
 h = header['HubbleParam']
 
 # set snapshots to plot
-snaps = np.array([99,67,33])
-z = iF.give_z_array(basePath)
-z_snaps = np.flip(z)[snaps]
+snaps = np.array([99, 67, 40], dtype=np.int64)
+z_snaps = np.array([il.groupcat.loadHeader(basePath, int(snap))["Redshift"] for snap in snaps], dtype=np.float32)
+
 
 # specify directory to save plots
-dirname = 'pics/cooling_radius'
+dirname = '/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/cooling_radius'
 os.makedirs(dirname, exist_ok=True)
 
 style = 'solid'
@@ -33,7 +33,7 @@ with mpl.rc_context({'xtick.top' : False}):
     fig,ax = plt.subplots(1, 1, figsize = (16,9))
 for i in range(0,snaps.size):
     groups = il.groupcat.loadHalos(basePath, snaps[i], fields = ['Group_M_Crit200'])
-    group_masses =  groups['Group_M_Crit200'][:]* 1e10/h
+    group_masses = np.asarray(groups, dtype=np.float32) * 1e10 / h
     del groups
 
     assert isfile(f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snaps[i]}.hdf5'), 'Cooling radius file does not exist!'
@@ -58,8 +58,7 @@ rec_group = Rectangle((12.6, -0.2), 0.8, 1900, color = 'lightgray', alpha = 0.3)
 ax.add_patch(rec_group)
 
 ax.set_xlim(10.8,14)
-ax.set_ylim(0.008,10)
-ax.set_yscale('log')
+ax.set_ylim(0,1)
 
 group_m = np.array([6.86093282699585, 7.398449420928955, 7.901801109313965, 8.393900871276855, 8.886045455932617,\
                     9.339580535888672, 9.809768676757812, 10.323699951171875, 10.840004920959473, 11.344971656799316,\
@@ -86,7 +85,7 @@ blue = mpatches.Patch(color='C0', linestyle = 'solid', label = f'z = {z_snaps[0]
 orange = mpatches.Patch(color='C1', linestyle = 'solid', label = f'z = {z_snaps[1]:.1f}')
 green = mpatches.Patch(color='C2', linestyle = 'solid', label = f'z = {z_snaps[2]:.1f}')
 
-legend = plt.legend(handles=[blue,orange,green], ncol=1, loc = 'upper left') # ncol=1：图例分成一列
+legend = plt.legend(handles=[blue,orange,green], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
 
 ax.set_xlabel(r'halo mass [$\log\,\rm{M}_\odot$]')
 ax.set_ylabel(r'Cooling radius $R_{\rm cr}$ [$R_{\rm 200c}$]')

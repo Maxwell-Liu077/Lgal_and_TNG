@@ -1,0 +1,10 @@
+/opt/gridview/slurm/spool/slurmd/job150912/slurm_script: 第 18 行:cd: /public/home/zju_visitor/LiuYuanhao/bymself: 没有那个文件或目录
+Traceback (most recent call last):
+  File "/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/main.py", line 33, in <module>
+    main()
+  File "/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/main.py", line 24, in main
+    subprocess.run([sys.executable, str(cooling_scripts), str(snap) ], cwd=root, env=env, check=True)
+  File "/public/home/zju_visitor/Anaconda3/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/public/home/zju_visitor/Anaconda3/bin/python', '/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/cooling_radius.py', '99']' died with <Signals.SIGKILL: 9>.
+slurmstepd: error: Detected 1 oom-kill event(s) in StepId=150912.batch cgroup. Some of your processes may have been killed by the cgroup out-of-memory handler.

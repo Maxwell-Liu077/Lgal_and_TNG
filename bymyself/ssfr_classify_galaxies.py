@@ -20,7 +20,7 @@ def load_sfr_data(basePath, snap):
     sfr = np.asarray(subhalos["SubhaloSFR"], dtype=np.float64)
     stellar_mass = np.asarray(subhalos["SubhaloMassType"][:, 4], dtype=np.float64) * 1.0e10 / h
 
-    group_first_sub = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
+    group_first_sub = np.asarray(halos, dtype=np.int64)
 
     return {"halo_id": halo_id, "subhalo_flag": subhalo_flag, "sfr": sfr, "stellar_mass": stellar_mass, "group_first_sub": group_first_sub, "h": h}
 

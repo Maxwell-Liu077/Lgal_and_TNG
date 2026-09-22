@@ -18,7 +18,7 @@ def load_agn_data(basePath, snap):
     subhalo_flag = np.asarray(subhalos["SubhaloFlag"], dtype=bool)
     bh_mass = np.asarray(subhalos["SubhaloBHMass"], dtype=np.float64)
     bh_mdot = np.asarray(subhalos["SubhaloBHMdot"], dtype=np.float64)
-    group_first_sub = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
+    group_first_sub = np.asarray(halos, dtype=np.int64)
 
     return {"halo_id": halo_id, "subhalo_flag": subhalo_flag, "bh_mass": bh_mass, "bh_mdot": bh_mdot, "group_first_sub": group_first_sub, "h": h}
 
@@ -65,12 +65,15 @@ def calculate_fedd_quantities(bh_mass, bh_mdot, halo_id, subhalo_flag, h):
     return fedd, log10_fedd, valid
 
 @njit(parallel=True)
-def classify_central_halos_fedd(group_first_sub, fedd, log10_fedd, valid_subhalo):
+def classify_central_halos_mode(group_first_sub, fedd, log10_fedd, bh_mass, valid_subhalo, h):
     num_halos = group_first_sub.shape[0]
+
     class_code = np.full(num_halos, -1, dtype=np.int8)
     central_subhalo_id = np.full(num_halos, -1, dtype=np.int64)
     central_fedd = np.full(num_halos, np.nan)
     central_log10_fedd = np.full(num_halos, np.nan)
+    central_bh_mass = np.full(num_halos, np.nan)
+    mode_threshold = np.full(num_halos, np.nan)
 
     for halo in nb.prange(num_halos):
         subhalo = group_first_sub[halo]
@@ -84,20 +87,21 @@ def classify_central_halos_fedd(group_first_sub, fedd, log10_fedd, valid_subhalo
         central_subhalo_id[halo] = subhalo
         central_fedd[halo] = fedd[subhalo]
         central_log10_fedd[halo] = log10_fedd[subhalo]
-        log_lambda = log10_fedd[subhalo]
 
-        if log_lambda < -4.0:
-            class_code[halo] = 0
-        elif log_lambda < -3.0:
-            class_code[halo] = 1
-        elif log_lambda < -2.0:
-            class_code[halo] = 2
-        elif log_lambda < -1.0:
-            class_code[halo] = 3
+        mbh = bh_mass[subhalo] * 1.0e10 / h
+        central_bh_mass[halo] = mbh
+
+        chi = min(0.002 * (mbh / 1.0e8) ** 2, 0.1)
+        mode_threshold[halo] = chi
+
+        if fedd[subhalo] <= 0:
+            class_code[halo] = 0       # Inactive
+        elif fedd[subhalo] < chi:
+            class_code[halo] = 1       # Kinetic
         else:
-            class_code[halo] = 4
+            class_code[halo] = 2       # Thermal
 
-    return central_subhalo_id, central_fedd, central_log10_fedd, class_code
+    return central_subhalo_id, central_fedd, central_log10_fedd, central_bh_mass, mode_threshold, class_code
 
 def fedd_classification(basePath, snap):
     start = time.time()
@@ -105,8 +109,8 @@ def fedd_classification(basePath, snap):
     end_loading = time.time()
     print('Loading took ',np.round(end_loading - start,3),' seconds.')
 
-    fedd, log10_fedd, valid_subhalo = calculate_fedd_quantities(data["bh_mass_code"], data["bh_mdot_code"], data["halo_id"], data["subhalo_flag"], data["h"])
-    central_subhalo_id, central_fedd, central_log10_fedd, class_code = classify_central_halos_fedd(data["group_first_sub"], fedd, log10_fedd, valid_subhalo)
+    fedd, log10_fedd, valid_subhalo = calculate_fedd_quantities(data["bh_mass"], data["bh_mdot"], data["halo_id"], data["subhalo_flag"], data["h"])
+    central_subhalo_id, central_fedd, central_log10_fedd, central_bh_mass, mode_threshold, class_code = classify_central_halos_mode(data["group_first_sub"], fedd, log10_fedd, data["bh_mass"], valid_subhalo, data["h"])
     end_calc = time.time()
     print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
 
@@ -120,13 +124,13 @@ def fedd_classification(basePath, snap):
         f.create_dataset("central_subhalo_id", data=central_subhalo_id)
         f.create_dataset("central_fedd", data=central_fedd)
         f.create_dataset("central_log10_fedd", data=central_log10_fedd)
-        f.create_dataset("class_code", data=class_code)
+        f.create_dataset("central_bh_mass", data=central_bh_mass)
+        f.create_dataset("mode_threshold", data=mode_threshold)
         f.create_dataset("valid_classification", data=(class_code >= 0))
-        f.attrs["class_0"] = "fEdd < 1e-4"
-        f.attrs["class_1"] = "1e-4 <= fEdd < 1e-3"
-        f.attrs["class_2"] = "1e-3 <= fEdd < 1e-2"
-        f.attrs["class_3"] = "1e-2 <= fEdd < 1e-1"
-        f.attrs["class_4"] = "fEdd >= 1e-1"
+        f.create_dataset("class_code", data=class_code)
+        f.attrs["class_0"] = "Inactive: fEdd <= 0"
+        f.attrs["class_1"] = "Kinetic: 0 < fEdd < chi(MBH)"
+        f.attrs["class_2"] = "Thermal: fEdd >= chi(MBH)"
 
     return class_code
 
