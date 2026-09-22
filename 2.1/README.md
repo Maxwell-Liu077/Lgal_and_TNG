@@ -341,3 +341,6 @@ NPZ，以及包含定义、有效数、`other`比例和闭合残差的元数据 
 `--state-workers`、`--state-backend`、`--rebuild-sample` 和 `--quiet` 覆盖运行路径、
 并行策略与输出行为。state 构建默认保持单 worker；tracer 扫描会在每个快照
 内部将全部 HDF5 chunks 分派到最多 64 个进程。
+
+项目目录中，`plotting_scripts/` 保存绘图脚本，`pics/` 保存生成的图像；其余
+分析、输入输出和测试脚本均位于 `2.1/` 项目目录内。默认生成图像保存到 `pics/`。

@@ -1,7 +1,7 @@
 import time
 import illustris_python as il
 import numba as nb
-from numba import jit, njit
+from numba import njit
 import numpy as np
 import h5py
 import sys
@@ -205,26 +205,12 @@ def cooling_radius(basePath, snap):
     end_loading = time.time()
     print('Loading took ',np.round(end_loading - start,3),' seconds.')
 
-    T_hot, Z_hot, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag = compute_halo_properties(
-        gas_masses,
-        gas_pos,
-        gas_mental,
-        halo_pos,
-        halo_R_200c,
-        halo_M_200c,
-        gasInHaloOffset,
-        numGasInHalo,
-        gas_state,
-        gas_temp,
-        boxSize,
-        a,
-        h,
-    )
+    T_hot, Z_hot, M_hot, t_dyn, T_200c, R200c_cm, HaloFlag = compute_halo_properties(gas_masses, gas_pos, gas_mental, halo_pos, halo_R_200c, halo_M_200c, gasInHaloOffset, numGasInHalo, gas_state, gas_temp, boxSize, a, h)
     lamda = compute_lamda(T_hot, Z_hot)
     cr = compute_cooling_radius(M_hot, t_dyn, lamda, T_200c, R200c_cm, halo_R_200c, HaloFlag, h, a)
 
     end_calc = time.time()
-    print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
+    print('Computing took ', np.round(end_calc - end_loading,3),' seconds.')
 
     result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     result_dir.mkdir(parents=True, exist_ok=True)
