@@ -19,9 +19,6 @@ def compute_cold_gas_fraction(gas_masses, gas_pos, halo_pos, halo_R_200c, gasInH
     for i in nb.prange(numHalo):
         indices_of_halo = np.arange(gasInHaloOffset[i], gasInHaloOffset[i] + numGasInHalo[i])
 
-        #only choose cold gas cells
-        indices_of_halo = indices_of_halo[gas_state[indices_of_halo] == 1]
-
         if indices_of_halo.shape[0] == 0:
             HaloFlag[i] = 0
             continue
@@ -30,13 +27,17 @@ def compute_cold_gas_fraction(gas_masses, gas_pos, halo_pos, halo_R_200c, gasInH
         halo_gas_dist = funcs.dist_vector_nb(halo_pos[i], halo_gas_pos, boxSize)
 
         #only choose gas cells within R200c and without ISM
-        indices_of_halo = indices_of_halo[np.where(halo_gas_dist <= halo_R_200c[i] and halo_gas_dist >= 0.1 * halo_R_200c[i])[0]]
+        radial_mask = (halo_gas_dist <= halo_R_200c[i]) & (halo_gas_dist >= 0.1 * halo_R_200c[i])
+        radial_indices = indices_of_halo[radial_mask]
 
-        if indices_of_halo.size == 0:
+        if radial_indices.size == 0:
             HaloFlag[i] = 0
             continue
 
-        cold_gas_fraction[i] = np.sum(gas_masses[indices_of_halo]) / np.sum(gas_masses)
+        #only choose cold gas cells
+        cold_indices = radial_indices[gas_state[radial_indices] == 1]
+
+        cold_gas_fraction[i] = np.sum(gas_masses[cold_indices]) / np.sum(gas_masses[radial_indices])
 
     return cold_gas_fraction, HaloFlag
 

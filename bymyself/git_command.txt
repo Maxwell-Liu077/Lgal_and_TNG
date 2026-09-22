@@ -1,0 +1,5 @@
+git add -A bymyself/
+git commit -m "Update cold gas fraction analysis"
+git push origin main
+GIT_SSH_COMMAND='ssh -o ClearAllForwardings=yes' git push lab main
+
