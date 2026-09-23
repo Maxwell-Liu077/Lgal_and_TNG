@@ -43,7 +43,7 @@ for i, snap in enumerate(snaps):
     x = cr
     y = cold_fraction
 
-    hb = ax.hexbin(x[valid], y[valid], gridsize=27, mincnt=1, cmap='plasma', bins='log')
+    hb = ax.hexbin(x[valid], y[valid], gridsize=50, mincnt=1, cmap='plasma', bins='log')
     fig.colorbar(hb, ax=ax, label="Number of halos")
 
     ax.set_xlabel(r"$R_{\rm cool}/R_{\rm 200c}$")
@@ -51,7 +51,7 @@ for i, snap in enumerate(snaps):
     ax.set_aspect('equal')
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.text(0.1, 0.9,'z = ' + str(z_snaps[i]), bbox=dict(boxstyle="round", ec='lightgray', fc='white', alpha = 0.8), transform=ax.transAxes, size = 20)
+    ax.text(0.1, 0.9,f'z={z_snaps[i]:.2f}' + str(), bbox=dict(boxstyle="round", ec='lightgray', fc='white', alpha = 0.8), transform=ax.transAxes, size = 20)
 
     plt.tight_layout()
-    plt.savefig(dirname + f'/cf_cr_diagram_snap{i}.pdf', format = 'pdf', dpi=300)
+    plt.savefig(dirname + f'/cf_cr_diagram_snap{snaps[i]}.pdf', format = 'pdf', dpi=300)

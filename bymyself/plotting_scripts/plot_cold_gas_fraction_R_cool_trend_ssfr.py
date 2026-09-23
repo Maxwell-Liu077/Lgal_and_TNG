@@ -44,7 +44,7 @@ for i, snap in enumerate(snaps):
         class_code = np.asarray(f["class_code"][:], dtype=np.int8)
 
     valid = cooling_flag & cold_flag & (cr >= 0) & (cr <= 1) & (cold_fraction >= 0) & (cold_fraction <= 1)
-    class_info = {0: ("Starburst", "#d73027"), 1: ("Main Sequence", "#4575b4"), 2: ("Transition", "#fdae61"), 3: ("Quenched", "#542788")}
+    class_info = {0: ("Starburst", "#d73027"), 1: ("Main Sequence", "#4575b4"), 2: ("Green Valley", "#fdae61"), 3: ("Quenched", "#542788")}
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharex=True, sharey=True)
     axes = axes.ravel()
@@ -76,6 +76,6 @@ for i, snap in enumerate(snaps):
     fig.supxlabel(r"$R_{\rm cool}/R_{\rm 200c}$")
     fig.supylabel(r"$M_{\rm cold}/M_{\rm gas}$")
     fig.suptitle(rf"$z={z_snaps[i]:.2f}$", fontsize=18)
-    fig.tight_layout(rect=[0.03, 0.03, 1.0, 0.95])
+
     fig.savefig(dirname + f'/cf_cr_diagram_{snaps[i]}.pdf', format = 'pdf', dpi=300)
     plt.close(fig)
