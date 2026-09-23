@@ -12,8 +12,8 @@ def load_mpb(basePath, start_snap, target_snap):
     halos = il.groupcat.loadHalos(basePath, start_snap, fields=["GroupFirstSub"])
     subhalos = il.groupcat.loadSubhalos(basePath, start_snap, fields=["SubhaloFlag"])
 
-    first = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
-    flags = np.asarray(subhalos["SubhaloFlag"], dtype=bool)
+    first = np.asarray(halos, dtype=np.int64)
+    flags = np.asarray(subhalos, dtype=bool)
     snaps = np.arange(start_snap, target_snap - 1, -1, dtype = np.int64)
 
     numHalo = first.shape[0]
@@ -32,7 +32,7 @@ def load_mpb(basePath, start_snap, target_snap):
 
     for snap in snaps:
         subs = il.groupcat.loadSubhalos(basePath, snap, fields=["SubhaloGrNr"])
-        subhalo_to_halo[snap] = np.asarray(subs["SubhaloGrNr"], dtype=np.int64)
+        subhalo_to_halo[snap] = np.asarray(subs, dtype=np.int64)
 
     for halo in range(numHalo):
         if not valid[halo]:
