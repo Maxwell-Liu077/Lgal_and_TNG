@@ -3,14 +3,7 @@ git commit -m "Update cold gas fraction analysis"
 git push origin main
 GIT_SSH_COMMAND='ssh -o ClearAllForwardings=yes' git push lab main
 
-# 服务器端默认以远程 origin/main 覆盖本地修改
 cd /public/home/zju_visitor/LiuYuanhao/SAM_project
 git fetch origin
 git reset --hard origin/main
 git status --short --branch
-
-# 如需删除未跟踪文件，先预览，再确认执行
-git clean -nd
-git clean -fd
-
-# 不要使用 git clean -fdx，否则会删除被 .gitignore 忽略的 data、缓存等文件。
