@@ -7,6 +7,7 @@ import time
 
 def load_mpb(basePath, start_snap, target_snap):
     start = time.time()
+    print(f"Running MPB calculation: snap {start_snap} -> {target_snap}")
 
     halos = il.groupcat.loadHalos(basePath, start_snap, fields=["GroupFirstSub"])
     subhalos = il.groupcat.loadSubhalos(basePath, start_snap, fields=["SubhaloFlag"])
