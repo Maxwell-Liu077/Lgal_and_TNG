@@ -59,7 +59,7 @@ def calculate_ssfr_quantities(sfr, stellar_mass, halo_id, subhalo_flag):
 
     return log_mstar, log_ssfr, valid, fit_valid
 
-def calculate_bin_medians(log_mstar, log_ssfr, active, mass_min=8.0, mass_max=10.2, bin_width=0.2, min_count=5):
+def calculate_bin_medians(log_mstar, log_ssfr, active, mass_min=7.0, mass_max=10.2, bin_width=0.2, min_count=5):
     num_bins = int(np.ceil((mass_max - mass_min) / bin_width))
     bin_mass = np.full(num_bins, np.nan)
     bin_ssfr = np.full(num_bins, np.nan)
@@ -98,7 +98,7 @@ def remove_low_ssfr(log_ssfr, active, bin_ssfr, bin_index, lower_offset=0.5):
     return new_active
 
 def fit_sfms(log_mstar, log_ssfr, max_iter=20):
-    active = np.isfinite(log_mstar) & np.isfinite(log_ssfr) & (log_mstar >= 8.0) & (log_mstar < 10.2)
+    active = np.isfinite(log_mstar) & np.isfinite(log_ssfr) & (log_mstar >= 7.0) & (log_mstar < 10.2)
 
     for _ in range(max_iter):
         bin_mass, bin_ssfr, bin_count, bin_index = calculate_bin_medians(log_mstar, log_ssfr, active)
@@ -120,16 +120,16 @@ def fit_sfms(log_mstar, log_ssfr, max_iter=20):
 
     return {"alpha": alpha, "beta": beta, "log_mstar_bin": bin_mass, "log_ssfr_bin": bin_ssfr, "bin_count": bin_count, "active_fit": active}
 
-def evaluate_sfms_reference(log_mstar, bin_mass, bin_ssfr, alpha, beta, mass_min=8.0, mass_max=10.2):
-    log_ssfr_sfms = np.full(log_mstar.shape, np.nan)
+def evaluate_sfms_reference(log_mstar, bin_ssfr, alpha, beta, mass_min=7.0, mass_max=10.2, bin_width=0.2):
+    log_ssfr_sfms = np.full(log_mstar.shape, np.nan, dtype=np.float64)
 
-    in_range = np.isfinite(log_mstar) & (log_mstar >= mass_min) & (log_mstar <= mass_max)
-
-    good_bins = np.isfinite(bin_mass) & np.isfinite(bin_ssfr)
-    log_ssfr_sfms[in_range] = np.interp(log_mstar[in_range], bin_mass[good_bins], bin_ssfr[good_bins])
+    bin_index = np.floor((log_mstar - mass_min) / bin_width).astype(np.int64)
+    in_range = np.isfinite(log_mstar) & (log_mstar >= mass_min) & (log_mstar <= mass_max) & (bin_index >= 0) & (bin_index < bin_ssfr.size)
+    valid = np.zeros(log_mstar.shape, dtype=bool)
+    valid[in_range] = np.isfinite(bin_ssfr[bin_index[in_range]])
+    log_ssfr_sfms[valid] = bin_ssfr[bin_index[valid]]
 
     high_mass = np.isfinite(log_mstar) & (log_mstar > mass_max)
-
     log_ssfr_sfms[high_mass] = alpha * log_mstar[high_mass] + beta
 
     return log_ssfr_sfms
@@ -166,10 +166,8 @@ def classify_central_halos(group_first_sub, log_ssfr, log_ssfr_sfms, valid_subha
         delta = log_ssfr[subhalo] - log_ssfr_sfms[subhalo]
         delta_log_ssfr[halo] = delta
 
-        if delta > 0.5:
-            class_code[halo] = 0 # Starburst
-        elif delta > -0.5:
-            class_code[halo] = 1 # Main Sequence
+        if delta > -0.5:
+            class_code[halo] = 1 # Star Forming
         elif delta > -1.0:
             class_code[halo] = 2 # Green Valley
         else:
@@ -185,7 +183,7 @@ def ssfr_classification(basePath, snap):
 
     log_mstar, log_ssfr, valid_subhalo, fit_valid = calculate_ssfr_quantities(data["sfr"], data["stellar_mass"], data["halo_id"], data["subhalo_flag"])
     sfms = fit_sfms(log_mstar[fit_valid], log_ssfr[fit_valid])
-    log_ssfr_sfms = evaluate_sfms_reference(log_mstar, sfms["log_mstar_bin"], sfms["log_ssfr_bin"], sfms["alpha"], sfms["beta"])
+    log_ssfr_sfms = evaluate_sfms_reference(log_mstar, sfms["log_ssfr_bin"], sfms["alpha"], sfms["beta"])
     central_subhalo_id, delta_log_ssfr, class_code = classify_central_halos(data["group_first_sub"], log_ssfr, log_ssfr_sfms, valid_subhalo)
     end_calc = time.time()
     print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
