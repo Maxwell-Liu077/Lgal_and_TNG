@@ -135,7 +135,7 @@ def evaluate_sfms_reference(log_mstar, bin_ssfr, alpha, beta, mass_min=7.0, mass
     return log_ssfr_sfms
 
 @njit(parallel=True)
-def classify_central_halos(group_first_sub, log_ssfr, log_ssfr_sfms, valid_subhalo):
+def classify_eligible_halos(group_first_sub, eligible_halo, log_ssfr, log_ssfr_sfms):
     num_halos = group_first_sub.shape[0]
 
     class_code = np.full(num_halos, -1, dtype=np.int8)
@@ -143,24 +143,19 @@ def classify_central_halos(group_first_sub, log_ssfr, log_ssfr_sfms, valid_subha
     delta_log_ssfr = np.full(num_halos, np.nan)
 
     for halo in nb.prange(num_halos):
+        if not eligible_halo[halo]:
+            continue
+
         subhalo = group_first_sub[halo]
 
-        if subhalo < 0 or subhalo >= valid_subhalo.shape[0]:
-            continue
-        if not valid_subhalo[subhalo]:
+        if subhalo < 0 or subhalo >= log_ssfr.shape[0]:
             continue
 
         central_subhalo_id[halo] = subhalo
 
-        if not np.isfinite(log_ssfr_sfms[subhalo]):
-            continue
-
         if log_ssfr[subhalo] == -np.inf:
             delta_log_ssfr[halo] = -np.inf
             class_code[halo] = 3
-            continue
-
-        if not np.isfinite(log_ssfr_sfms[subhalo]):
             continue
 
         delta = log_ssfr[subhalo] - log_ssfr_sfms[subhalo]
@@ -178,15 +173,28 @@ def classify_central_halos(group_first_sub, log_ssfr, log_ssfr_sfms, valid_subha
 def ssfr_classification(basePath, snap):
     start = time.time()
     data = load_sfr_data(basePath, snap)
+    data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+    file_path = data_dir / f"cold_gas_fraction_{snap}_1.hdf5"
+
+    with h5py.File(file_path, "r") as f:
+        eligible_halo = np.asarray(f["selection_flag"][:], dtype=bool)
+
     end_loading = time.time()
     print('Loading took ',np.round(end_loading - start,3),' seconds.')
 
     log_mstar, log_ssfr, valid_subhalo, fit_valid = calculate_ssfr_quantities(data["sfr"], data["stellar_mass"], data["halo_id"], data["subhalo_flag"])
     sfms = fit_sfms(log_mstar[fit_valid], log_ssfr[fit_valid])
     log_ssfr_sfms = evaluate_sfms_reference(log_mstar, sfms["log_ssfr_bin"], sfms["alpha"], sfms["beta"])
-    central_subhalo_id, delta_log_ssfr, class_code = classify_central_halos(data["group_first_sub"], log_ssfr, log_ssfr_sfms, valid_subhalo)
+    central_subhalo_id, delta_log_ssfr, class_code = classify_eligible_halos(data["group_first_sub"], eligible_halo, log_ssfr, log_ssfr_sfms)
     end_calc = time.time()
     print('Computing took ',np.round(end_calc - end_loading,3),' seconds.')
+
+    n_eligible = np.count_nonzero(eligible_halo)
+    classified_mask = eligible_halo & np.isin(class_code, np.array([1, 2, 3], dtype=np.int8))
+    n_classified = np.count_nonzero(classified_mask)
+
+    print("Eligible halos:", n_eligible)
+    print("Classified halos:", n_classified)
 
     result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -196,6 +204,7 @@ def ssfr_classification(basePath, snap):
         f.create_dataset("central_subhalo_id", data=central_subhalo_id)
         f.create_dataset("delta_log_ssfr", data=delta_log_ssfr)
         f.create_dataset("class_code", data=class_code)
+        f.create_dataset("selection_flag", data=eligible_halo.astype(np.ubyte))
 
     return class_code
 

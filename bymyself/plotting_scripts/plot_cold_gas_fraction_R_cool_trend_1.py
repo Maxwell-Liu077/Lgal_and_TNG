@@ -28,7 +28,7 @@ for i, snap in enumerate(snaps):
     assert isfile(f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cold_gas_fraction_{snaps[i]}.hdf5'), 'Cold gas fraction file does not exist!'
 
     cooling_file = f"/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snaps[i]}.hdf5"
-    cold_file = f"/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cold_gas_fraction_{snaps[i]}.hdf5"
+    cold_file = f"/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cold_gas_fraction_{snaps[i]}_1.hdf5"
 
     with h5py.File(cooling_file, "r") as f:
         cr = np.asarray(f["cooling_radius"][:], dtype=np.float32)
@@ -44,7 +44,7 @@ for i, snap in enumerate(snaps):
     x = cr
     y = cold_fraction
 
-    hb = ax.hexbin(x[valid], y[valid], gridsize=35, mincnt=1, cmap='plasma', bins='log')
+    hb = ax.hexbin(x[valid], y[valid], gridsize=35, mincnt=1, cmap='viridis', bins='log')
     fig.colorbar(hb, ax=ax, label="Number of halos")
 
     ax.set_xlabel(r"$R_{\rm cool}/R_{\rm 200c}$")
@@ -56,4 +56,4 @@ for i, snap in enumerate(snaps):
     ax.text(0.05, 0.95, f"$N_{{\\rm eligible}}={num_eligible}$", transform=ax.transAxes, ha="left", va="top", fontsize=16, bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
 
     plt.tight_layout()
-    plt.savefig(dirname + f'/cf_cr_diagram_snap{snaps[i]}.pdf', format = 'pdf', dpi=300)
+    plt.savefig(dirname + f'/cf_cr_diagram_snap{snaps[i]}_1.pdf', format = 'pdf', dpi=300)

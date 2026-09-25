@@ -57,13 +57,13 @@ for i, snap in enumerate(snaps):
         if number == 0:
             ax.text(0.5, 0.5, "No valid halos", ha="center", va="center", transform=ax.transAxes)
         else:
-            hb = ax.hexbin(cr[mask], cold_fraction[mask], gridsize=35, mincnt=1, cmap="plasma")
+            hb = ax.hexbin(cr[mask], cold_fraction[mask], gridsize=16, mincnt=1, cmap="plasma")
             hexbin_list.append(hb)
 
         ax.set_title(f"{label}  (N={number})", color=color, fontsize=16)
-        ax.set_xlim(0, 1)
+        ax.set_xlim(0, 5)
         ax.set_ylim(0, 1)
-        ax.set_aspect("equal", adjustable="box")
+        ax.set_aspect("auto", adjustable="box")
 
     vmax = max(np.max(hb.get_array()) for hb in hexbin_list)
     shared_norm = LogNorm(vmin=1, vmax=vmax)

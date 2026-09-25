@@ -129,7 +129,7 @@ def cold_gas_fraction(basePath, snap):
 
     result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     result_dir.mkdir(parents=True, exist_ok=True)
-    output_file = result_dir / f"cold_gas_fraction_{snap}.hdf5"
+    output_file = result_dir / f"cold_gas_fraction_{snap}_1.hdf5"
     with h5py.File(output_file, "w") as f:
         f.create_dataset("cold_gas_fraction", data=np.asarray(cold_gas_fraction, dtype=np.float32), compression="gzip", compression_opts=4)
         f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
