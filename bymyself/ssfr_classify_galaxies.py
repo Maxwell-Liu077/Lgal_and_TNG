@@ -161,8 +161,10 @@ def classify_eligible_halos(group_first_sub, eligible_halo, log_ssfr, log_ssfr_s
         delta = log_ssfr[subhalo] - log_ssfr_sfms[subhalo]
         delta_log_ssfr[halo] = delta
 
-        if delta > -0.5:
-            class_code[halo] = 1 # Star Forming
+        if delta > 0.5:
+            class_code[halo] = 0 # Star Burst
+        elif delta > -0.5:
+            class_code[halo] = 1 # Main Sequence
         elif delta > -1.0:
             class_code[halo] = 2 # Green Valley
         else:

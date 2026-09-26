@@ -55,10 +55,10 @@ for i, snap in enumerate(snaps):
     valid_ids = ((class_halo_ids >= 0) & (class_halo_ids < group_masses.size))
     class_by_halo[class_halo_ids[valid_ids]] = class_code[valid_ids]
 
-    class_info = {0: ("Starburst", "#fde725"), 1: ("Main Sequence", "#35b779"), 2: ("Transition", "#31688e"), 3: ("Quenched", "#440154")}
+    class_info = {0: ("Star Burst", "#fd7825"), 1: ("Main Sequence", "#fde725"), 2: ("Green Valley", "#35b779"), 3: ("Quenched", "#440154")}
 
     for code, (label, color) in class_info.items():
-        mask = haloFlag & (class_by_halo == code) & np.isfinite(group_masses) & np.isfinite(cr) & (group_masses > 0) & (cr > 0)
+        mask = haloFlag & (class_by_halo == code)
         number = np.count_nonzero(mask)
         if number < 5:
             print(f"{label}: only {number} valid halos, skip plotting.")
@@ -68,7 +68,7 @@ for i, snap in enumerate(snaps):
         y = cr[mask]
         xmed, ymed, y16, y84 = funcs.binData_med(x, y, 25)
         ax.plot(xmed, ymed, color=color, linestyle = style)
-        ax.fill_between(xmed, y16, y84, alpha = 0.2)
+        ax.fill_between(xmed, y16, y84, color=color, alpha = 0.2)
 
     rec_dwarf = Rectangle((10.8, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
     ax.add_patch(rec_dwarf)
@@ -102,12 +102,12 @@ for i, snap in enumerate(snaps):
     ax.set_xticks([11,12,13])
     ax.set_xticklabels([11,12,13])
 
-    yellow = mpatches.Patch(color="#fde725", linestyle = 'solid', label = "Starburst")
-    green = mpatches.Patch(color="#35b779", linestyle = 'solid', label = "Main Sequence")
-    blue = mpatches.Patch(color="#31688e", linestyle = 'solid', label = "Transition")
+    orange = mpatches.Patch(color="#fd7825", linestyle = 'solid', label = "Star Burst")
+    yellow = mpatches.Patch(color="#fde725", linestyle = 'solid', label = "Main Sequence")
+    green = mpatches.Patch(color="#35b779", linestyle = 'solid', label = "Green Valley")
     purple = mpatches.Patch(color="#440154", linestyle = 'solid', label = "Quenched")
 
-    legend = plt.legend(handles=[yellow,green,blue,purple], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
+    legend = plt.legend(handles=[orange,yellow,green,purple], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
 
     ax.text(0.05, 0.95, rf"$z={z_snaps[i]:.2f}$", transform=ax.transAxes, ha="left", va="top", fontsize=18, bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
 

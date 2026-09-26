@@ -5,6 +5,61 @@ from pathlib import Path
 import h5py
 import time
 
+def load_mpb_branches(basePath, start_snap, target_snap, first, valid, mpb_subhalos):
+    row_offsets = il.sublink.subLinkOffsets(basePath, "SubLink")
+    queries_by_file = {}
+    valid_halos = np.flatnonzero(valid)
+    central_subhalos = first[valid_halos].astype(np.int64)
+
+    unique_subhalos, inverse = np.unique(central_subhalos, return_inverse=True)
+    offset_path = il.groupcat.offsetPath(basePath, start_snap)
+    prefix = f"Subhalo/SubLink/"
+
+    with h5py.File(offset_path, "r") as f:
+        row_unique = f[prefix + "RowNum"][unique_subhalos]
+        subhalo_id_unique = f[prefix + "SubhaloID"][unique_subhalos]
+
+    row_nums = row_unique[inverse]
+    subhalo_ids = subhalo_id_unique[inverse]
+
+    for halo, row_num, subhalo_id in zip(valid_halos, row_nums, subhalo_ids):
+        row_num = int(row_num)
+        subhalo_id = int(subhalo_id)
+        if row_num < 0 or subhalo_id < 0:
+            continue
+
+        file_num = int(np.searchsorted(row_offsets, row_num, side="right") - 1)
+        if file_num < 0 or file_num >= row_offsets.size:
+            continue
+
+        file_offset = int(row_num - row_offsets[file_num])
+        queries_by_file.setdefault(file_num, []).append((int(halo), file_offset, subhalo_id))
+
+    for file_num, queries in sorted(queries_by_file.items()):
+        tree_file = il.sublink.treePath(basePath, "SubLink", file_num)
+        with h5py.File(tree_file, "r") as f:
+            snap_data = f["SnapNum"]
+            subfind_data = f["SubfindID"]
+            main_leaf_data = f["MainLeafProgenitorID"]
+
+            for halo, file_offset, subhalo_id in queries:
+                main_leaf_id = int(main_leaf_data[file_offset])
+                branch_length = main_leaf_id - subhalo_id + 1
+
+                if branch_length <= 0 or file_offset + branch_length > subfind_data.shape[0]:
+                    continue
+
+                branch_end = file_offset + branch_length
+                branch_snaps = snap_data[file_offset:branch_end]
+                branch_subs = subfind_data[file_offset:branch_end]
+
+                for branch_snap, branch_sub in zip(branch_snaps, branch_subs):
+                    branch_snap = int(branch_snap)
+                    if target_snap <= branch_snap <= start_snap:
+                        column = start_snap - branch_snap
+                        mpb_subhalos[halo, column] = int(branch_sub)
+
+
 def load_mpb(basePath, start_snap, target_snap):
     start = time.time()
     print(f"Running MPB calculation: snap {start_snap} -> {target_snap}")
@@ -27,37 +82,19 @@ def load_mpb(basePath, start_snap, target_snap):
     valid = np.zeros(numHalo, dtype = bool)
     valid_halo = ((first >= 0) & (first < flags.size))
     valid[valid_halo] = flags[first[valid_halo]]
-
     subhalo_to_halo = {}
 
-    for snap in snaps:
+    for snap in snaps[1:]:
         subs = il.groupcat.loadSubhalos(basePath, snap, fields=["SubhaloGrNr"])
         subhalo_to_halo[snap] = np.asarray(subs, dtype=np.int64)
 
-    for halo in range(numHalo):
-        if not valid[halo]:
-            continue
+    load_mpb_branches(basePath, start_snap, target_snap, first, valid, mpb_subhalos)
 
-        central_sub = first[halo]
-        tree = il.sublink.loadTree(basePath, start_snap, central_sub, onlyMPB = True, fields = ["SnapNum", "SubfindID"])
-
-        if tree is None:
-            continue
-
-        branch_snaps = np.asarray(tree["SnapNum"], dtype=np.int64)
-        branch_subs = np.asarray(tree["SubfindID"], dtype=np.int64)
-        for branch_snap, branch_sub in zip(branch_snaps, branch_subs):
-            if not (target_snap <= branch_snap <= start_snap):
-                continue
-
-            column = start_snap - branch_snap
-            group_ids = subhalo_to_halo[branch_snap]
-
-            if not(0 <= branch_sub < group_ids.size):
-                continue
-
-            mpb_halos[halo, column] = group_ids[branch_sub]
-            mpb_subhalos[halo, column] = branch_sub
+    for column, snap in enumerate(snaps[1:], start=1):
+        group_ids = subhalo_to_halo[snap]
+        sub_ids = mpb_subhalos[:, column]
+        valid_ids = (sub_ids >= 0) & (sub_ids < group_ids.size)
+        mpb_halos[valid_ids, column] = group_ids[sub_ids[valid_ids]]
 
     end = time.time()
     print('Loading took ',np.round(end - start,3),' seconds.')

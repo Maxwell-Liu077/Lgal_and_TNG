@@ -43,8 +43,8 @@ for i, snap in enumerate(snaps):
         halo_id = np.asarray(f["halo_id"][:], dtype=np.int64)
         class_code = np.asarray(f["class_code"][:], dtype=np.int8)
 
-    valid = cooling_flag & cold_flag & (cr >= 0) & (cr <= 1) & (cold_fraction >= 0) & (cold_fraction <= 1)
-    class_info = {0: ("Starburst", "#d73027"), 1: ("Main Sequence", "#4575b4"), 2: ("Green Valley", "#fdae61"), 3: ("Quenched", "#542788")}
+    valid = cooling_flag & cold_flag & (cr >= 0) & (cr <= 5) & np.isfinite(cold_fraction)
+    class_info = {0: ("Star Burst", "#fd7825"), 1: ("Main Sequence", "#fde725"), 2: ("Green Valley", "#35b779"), 3: ("Quenched", "#440154")}
 
     fig, axes = plt.subplots(2, 2, figsize=(14, 12), sharex=True, sharey=True)
     axes = axes.ravel()
@@ -57,13 +57,13 @@ for i, snap in enumerate(snaps):
         if number == 0:
             ax.text(0.5, 0.5, "No valid halos", ha="center", va="center", transform=ax.transAxes)
         else:
-            hb = ax.hexbin(cr[mask], cold_fraction[mask], gridsize=16, mincnt=1, cmap="plasma")
+            hb = ax.hexbin(cr[mask], cold_fraction[mask], gridsize=16, mincnt=1, cmap="inferno")
             hexbin_list.append(hb)
 
         ax.set_title(f"{label}  (N={number})", color=color, fontsize=16)
         ax.set_xlim(0, 5)
         ax.set_ylim(0, 1)
-        ax.set_aspect("auto", adjustable="box")
+        ax.set_box_aspect(1)
 
     vmax = max(np.max(hb.get_array()) for hb in hexbin_list)
     shared_norm = LogNorm(vmin=1, vmax=vmax)
@@ -77,5 +77,5 @@ for i, snap in enumerate(snaps):
     fig.supylabel(r"$M_{\rm cold}/M_{\rm gas}$")
     fig.suptitle(rf"$z={z_snaps[i]:.2f}$", fontsize=18)
 
-    fig.savefig(dirname + f'/cf_cr_diagram_{snaps[i]}.pdf', format = 'pdf', dpi=300)
+    fig.savefig(dirname + f'/cf_cr_diagram_classified_by_ssfr{snaps[i]}.pdf', format = 'pdf', dpi=300)
     plt.close(fig)
