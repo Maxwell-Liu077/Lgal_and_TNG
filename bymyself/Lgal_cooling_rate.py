@@ -3,6 +3,7 @@ import mpb
 import h5py
 import numpy as np
 from os.path import isfile
+from pathlib import Path
 
 def compute_Lgal_cooling_rate(basePath, snap_1, snap_2):
 
@@ -34,4 +35,13 @@ def compute_Lgal_cooling_rate(basePath, snap_1, snap_2):
         rates[i] = average_M_hot * frac / average_t_dyn * 365.25 * 24 * 3600 / 1.98847e33 # M_sun/yr
         valid[i] = True
 
-    return {"halos_1": halos_1, "halos_2": halos_2, "rate": rates, "valid": valid}
+    result_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+    result_dir.mkdir(parents=True, exist_ok=True)
+    output_file = result_dir / f"Lgal_cooling_rate_{snap_1}_and_{snap_2}.hdf5"
+    with h5py.File(output_file, "w") as f:
+        f.create_dataset("halo_id_snap_1", data=halos_1, compression="gzip", compression_opts=4)
+        f.create_dataset("halo_id_snap_2", data=halos_2, compression="gzip", compression_opts=4)
+        f.create_dataset("cooling_rate", data=rates, compression="gzip", compression_opts=4)
+        f.create_dataset("valid", data=valid.astype(np.uint8), compression="gzip", compression_opts=4)
+
+    return 0
