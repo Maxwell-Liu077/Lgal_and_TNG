@@ -72,3 +72,15 @@ def binData_med(xVal, yVal, numBins=4, lower = 16, upper = 84):
             yup[j] = np.nanpercentile(yVal[relInd],upper)
 
     return xMed, yMed, ylow, yup
+
+# 数组 a 中的每个元素，是否出现在数组 b 中
+@njit(parallel=True)
+def isin(a, b):
+    out=np.empty(a.shape[0], dtype=nb.boolean)
+    b = set(b)
+    for i in nb.prange(a.shape[0]):
+        if a[i] in b:
+            out[i]=True
+        else:
+            out[i]=False
+    return out
