@@ -52,9 +52,11 @@ def linear(x,a,b):
     return a*x+b
 
 @njit
-def linear_fit(x,y):
+def linear_fit(x, y):
+    x = x.astype(np.float64)
+    y = y.astype(np.float64)
     A = np.column_stack((np.ones(x.shape[0]), x))
-    opt_param = np.ascontiguousarray(inv(A.T@A))@A.T@y
+    opt_param = np.ascontiguousarray(inv(A.T @ A)) @ A.T @ y
     return opt_param
 
 @njit
@@ -103,7 +105,7 @@ def extrapolate_new(arr, a, boxSize, bound):
             is_extrapolated[i] = True
 
             arr[i,:,j] = new_coord
-            del coord
+
     return arr, is_extrapolated
 
 #extrapolate positions
@@ -206,4 +208,4 @@ def save_always_central_trees(basePath, start_snap, subhaloFlag, snap_min=40, sn
         f.create_dataset("mpb_subhalo_ids", data=accepted_node_ids)
         f.create_dataset("mpb_fof_ids", data=accepted_fof_ids)
 
-    return
+    return accepted_start_ids, accepted_node_ids, accepted_fof_ids

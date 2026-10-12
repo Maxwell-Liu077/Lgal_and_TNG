@@ -55,20 +55,21 @@ for i, snap in enumerate(snaps):
     valid_ids = ((class_halo_ids >= 0) & (class_halo_ids < group_masses.size))
     class_by_halo[class_halo_ids[valid_ids]] = class_code[valid_ids]
 
-    class_info = {0: ("Star Burst", "#fd7825"), 1: ("Main Sequence", "#fde725"), 2: ("Green Valley", "#35b779"), 3: ("Quenched", "#440154")}
+    plot_groups = [("Star forming", np.isin(class_by_halo, [0, 1, 2]), "#fd7825"), ("Quenched", class_by_halo == 3, "#440154")]
 
-    for code, (label, color) in class_info.items():
-        mask = haloFlag & (class_by_halo == code)
+    legend_handles = []
+
+    for label, category_mask, color in plot_groups:
+        mask = haloFlag & category_mask
         number = np.count_nonzero(mask)
-        if number < 5:
-            print(f"{label}: only {number} valid halos, skip plotting.")
-            continue
 
         x = np.log10(group_masses[mask])
         y = cr[mask]
         xmed, ymed, y16, y84 = funcs.binData_med(x, y, 25)
-        ax.plot(xmed, ymed, color=color, linestyle = style)
-        ax.fill_between(xmed, y16, y84, color=color, alpha = 0.2)
+
+        ax.plot(xmed, ymed, color=color, linestyle=style)
+        ax.fill_between(xmed, y16, y84, color=color, alpha=0.2)
+        legend_handles.append(mpatches.Patch(color=color, label=f"{label} (N={number:,})"))
 
     rec_dwarf = Rectangle((10.8, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
     ax.add_patch(rec_dwarf)
@@ -77,7 +78,7 @@ for i, snap in enumerate(snaps):
     rec_group = Rectangle((12.6, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
     ax.add_patch(rec_group)
 
-    ax.set_xlim(10.8,13)
+    ax.set_xlim(9,13)
     ax.set_ylim(0.1,10)
     ax.set_yscale('log')
 
@@ -88,26 +89,25 @@ for i, snap in enumerate(snaps):
                     5.147671699523926, 6.013262748718262, 7.66148042678833, 8.850899696350098, 9.708621978759766,\
                     10.465829849243164, 11.046808242797852, 11.511899948120117, 11.899462699890137, 12.20790958404541])
 
-    secax = ax.twiny() # 创建一个共享纵轴、但拥有独立横轴的副坐标轴
-    f_interp = interpolate.interp1d(gal_m, group_m) # 建立插值关系
-    new_tick_locations = np.array([9., 9.5, 10., 10.5, 11., 11.5, 12.])
-    secax.set_xlim(ax.get_xlim()) # 让顶部坐标轴和底部坐标轴使用相同的横坐标范围
-    secax.set_xticks(f_interp(new_tick_locations)) # 将顶部恒星质量刻度转换成对应的 halo mass 位置
-    secax.set_xticklabels(new_tick_locations) # 将顶部刻度显示为恒星质量的数值，而不是实际的 halo mass
-    secax.minorticks_off() # 关闭顶部坐标轴的小刻度
+    group_ticks = np.array([9., 10., 11., 12., 13.])
+    gal_ticks = np.interp(group_ticks, group_m, gal_m)
+
+    secax = ax.twiny()
+    secax.set_xlim(ax.get_xlim())
+    secax.set_xticks(group_ticks)
+    secax.set_xticklabels([f"{mass:.1f}" for mass in gal_ticks])
+    secax.minorticks_off()
     secax.set_xlabel(r'stellar mass [$\log\,\rm{M}_\odot$]')
 
     ax.minorticks_on()
     ax.grid(which = 'major',axis = 'y')
-    ax.set_xticks([11,12,13])
-    ax.set_xticklabels([11,12,13])
+    ax.set_xticks([9,10,11,12,13])
+    ax.set_xticklabels([9,10,11,12,13])
 
-    orange = mpatches.Patch(color="#fd7825", linestyle = 'solid', label = "Star Burst")
-    yellow = mpatches.Patch(color="#fde725", linestyle = 'solid', label = "Main Sequence")
-    green = mpatches.Patch(color="#35b779", linestyle = 'solid', label = "Green Valley")
+    orange = mpatches.Patch(color="#fd7825", linestyle = 'solid', label = "Starforming")
     purple = mpatches.Patch(color="#440154", linestyle = 'solid', label = "Quenched")
 
-    legend = plt.legend(handles=[orange,yellow,green,purple], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
+    ax.legend(handles=legend_handles, ncol=1, loc="upper right")
 
     ax.text(0.05, 0.95, rf"$z={z_snaps[i]:.2f}$", transform=ax.transAxes, ha="left", va="top", fontsize=18, bbox=dict(facecolor="white", alpha=0.7, edgecolor="none"))
 
