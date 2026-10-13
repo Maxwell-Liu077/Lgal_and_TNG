@@ -183,7 +183,7 @@ def tracer_out_rate_direct(basePath, target_snap, start_snap):
 
     source_counts = np.zeros((num_trees, 4), dtype=np.int64)
 
-    cats_file = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/distance_cats/distance_cats_{target_snap}.hdf5'
+    cats_file = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/distance_cats/distance_cats_start_{start_snap}_target_{target_snap}.hdf5'
     cf = h5py.File(cats_file,'r')
     offsets = np.asarray(cf["tree_tracer_offsets"][:], dtype=np.int64)
     tracer_class = np.asarray(cf["tracers_class"][:], dtype=np.int8)

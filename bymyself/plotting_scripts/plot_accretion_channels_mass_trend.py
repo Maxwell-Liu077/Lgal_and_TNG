@@ -16,7 +16,7 @@ target_snaps = np.asarray([snap for snap in sys.argv[2:]], dtype=np.int64)
 
 numBins = 25
 basePath = "/public/share/chenhouzun/TNG50-1/output/"
-data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics")
 tree_file = data_dir / "all_selected_trees.hdf5"
 distance_dir = data_dir / "distance_cats"
 output_dir = data_dir / "accretion_channels"
@@ -46,7 +46,7 @@ log_stellar_mass[valid_mass] = np.log10(stellar_mass_msun[valid_mass])
 # are excluded from the denominator.
 class_ids = np.asarray([0, 1, 2, 3, 4], dtype=np.int8)
 category_labels = ["Inner Cold", "Outer Cold", "Inner Hot", "Outer Hot", "IGM"]
-category_colors = ["tab:blue", "tab:purple", "tab:orange", "tab:red", "tab:yellow"]
+category_colors = ["tab:blue", "tab:purple", "tab:orange", "tab:red", "gold"]
 linestyle_cycle = ["solid", "dashed"]
 
 fractions_by_target = np.full((target_snaps.size, num_trees, class_ids.size), np.nan, dtype=np.float64)
