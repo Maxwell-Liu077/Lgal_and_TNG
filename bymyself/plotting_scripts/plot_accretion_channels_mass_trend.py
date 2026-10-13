@@ -1,167 +1,118 @@
-import illustris_python as il
-import matplotlib.pyplot as plt
-import numpy as np
+import sys
+from pathlib import Path
+from os.path import isfile, isdir
 import h5py
-
-import funcs
+import illustris_python as il
 import matplotlib.lines as mlines
 import matplotlib.patches as mpatches
+import matplotlib.pyplot as plt
+import numpy as np
+import funcs
 
-import sys
-from os.path import isfile, isdir
+plt.style.use("fancy_plots2.mplstyle")
 
-plt.style.use('fancy_plots2.mplstyle')
+start_snap = int(sys.argv[1])
+target_snaps = np.asarray([snap for snap in sys.argv[2:]], dtype=np.int64)
 
-run = int(sys.argv[1])
 numBins = 25
+basePath = "/public/share/chenhouzun/TNG50-1/output/"
+data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+tree_file = data_dir / "all_selected_trees.hdf5"
+distance_dir = data_dir / "distance_cats"
+output_dir = data_dir / "accretion_channels"
+output_dir.mkdir(parents=True, exist_ok=True)
 
-# specify output directory
-dirname = 'files/accretion_channels'
-assert isdir(dirname), 'output directory does not exist!'
+# Read the selected-tree row IDs and the central-subhalo IDs at start_snap.
+with h5py.File(tree_file, "r") as f:
+    tree_start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
+    snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
+    start_columns = np.flatnonzero(snap_numbers == start_snap)
+    start_node_subhalo_ids = np.asarray(f["mpb_subhalo_ids"][:, start_columns[0]], dtype=np.int64)
 
-basePath = f'/virgotng/universe/IllustrisTNG/TNG50-{run}/output'
-h_const = il.groupcat.loadHeader(basePath, 99)['HubbleParam']
-num_subs = il.groupcat.loadHeader(basePath, 99)['Nsubgroups_Total']
-raw_stellar_masses = il.groupcat.loadSubhalos(basePath, 99, fields = ['SubhaloMassType'])[:,4] * 1e10 / h_const
+num_trees = tree_start_ids.size
 
-assert isfile('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_insitu_test2.hdf5'), 'Accretion channels file (in-situ) does not exist!'
-f = h5py.File('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_insitu_test2.hdf5','r')
-all_ids = np.arange(num_subs)
+# Match the stellar-mass definition used by plot_accretion_channels.py.
+header = il.groupcat.loadHeader(basePath, start_snap)
+h_const = float(header["HubbleParam"])
+all_stellar_masses = il.groupcat.loadSubhalos(basePath, start_snap, fields=["SubhaloMassType"])[:, 4] * 1.0e10 / h_const
 
-gal_accretion_channels = f['accretion_channels/for_all_galaxies'][:,:,:]
-subhaloFlag = f['subhaloFlag'][:]
+stellar_mass_msun = np.full(num_trees, np.nan, dtype=np.float64)
+stellar_mass_msun = all_stellar_masses[start_node_subhalo_ids]
+valid_mass = np.isfinite(stellar_mass_msun) & (stellar_mass_msun > 0.0)
+log_stellar_mass = np.full(num_trees, np.nan, dtype=np.float64)
+log_stellar_mass[valid_mass] = np.log10(stellar_mass_msun[valid_mass])
 
-f.close()
+# Use classes 1--4, matching tracer_cooling_rate_direct. Class 0 and -1
+# are excluded from the denominator.
+class_ids = np.asarray([0, 1, 2, 3, 4], dtype=np.int8)
+category_labels = ["Inner Cold", "Outer Cold", "Inner Hot", "Outer Hot", "IGM"]
+category_colors = ["tab:blue", "tab:purple", "tab:orange", "tab:red", "tab:yellow"]
+linestyle_cycle = ["solid", "dashed"]
 
-mask = np.nonzero(subhaloFlag)[0]
-stellar_masses = np.log10(raw_stellar_masses[mask])#[all_ids]
-gal_accretion_channels = gal_accretion_channels[mask,:,:] #choose all stars, not insitu (1) or medsitu (2)
+fractions_by_target = np.full((target_snaps.size, num_trees, class_ids.size), np.nan, dtype=np.float64)
+valid_tree_by_target = np.zeros((target_snaps.size, num_trees), dtype=bool)
 
-mass_bins, from_igm_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,0], numBins)
-_, mergers_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,2], numBins)
-_, stripped_from_halos_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,3], numBins)
-_, nep_wind_recycle_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,5], numBins)
-_, stripped_from_sat_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,6], numBins)
-_, recycled2_bins, _, _ = funcs.binData_med(stellar_masses, gal_accretion_channels[:,0,7], numBins)
+for target_index, target_snap in enumerate(target_snaps):
+    distance_file = distance_dir / f"distance_cats_start_{start_snap}_target_{target_snap}.hdf5"
 
-# mass_bins, from_igm_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,0], numBins)
-# _, mergers_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,2], numBins)
-# _, stripped_from_halos_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,3], numBins)
-# _, nep_wind_recycle_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,5], numBins)
-# _, stripped_from_sat_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,6], numBins)
-# _, recycled2_bins = funcs.binData_mean(stellar_masses, gal_accretion_channels[:,0,7], numBins)
+    with h5py.File(distance_file, "r") as f:
+        file_start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
+        tree_tracer_offsets = np.asarray(f["tree_tracer_offsets"][:], dtype=np.int64)
+        tracer_classes = np.asarray(f["tracers_class"][:], dtype=np.int8)
+        tree_valid = np.asarray(f["tree_valid"][:], dtype=bool)
 
-#### dm ####
+    class_counts = np.zeros((num_trees, class_ids.size), dtype=np.int64)
+    tracer_counts_by_tree = np.diff(tree_tracer_offsets)
 
-assert isfile('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_dm_test.hdf5'), 'Accretion channels file (DM) does not exist!'
-f = h5py.File('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_dm_test.hdf5','r')
-overall_fracs = f['accretion_channels/overall_fractions'][:]
-dm_gal_accretion_channels = f['accretion_channels/for_all_galaxies'][:,:]
-subhaloFlag = f['subhaloFlag'][:]
-f.close()
+    for tree_row in range(num_trees):
+        first = tree_tracer_offsets[tree_row]
+        last = tree_tracer_offsets[tree_row + 1]
+        classes_for_tree = tracer_classes[first:last]
 
-mask1 = np.nonzero(subhaloFlag)[0]
+        for class_index, class_id in enumerate(class_ids):
+            class_counts[tree_row, class_index] = np.count_nonzero(classes_for_tree == class_id)
 
-stellar_masses = raw_stellar_masses[mask1]
-dm_mass_mask = np.nonzero(stellar_masses)[0]
-stellar_masses = np.log10(stellar_masses[dm_mass_mask])
-dm_gal_accretion_channels = dm_gal_accretion_channels[mask1[dm_mass_mask],:]
+    has_tracers = tracer_counts_by_tree > 0
+    fractions_by_target[target_index, has_tracers] = class_counts[has_tracers] / tracer_counts_by_tree[has_tracers, None]
+    valid_tree_by_target[target_index] = tree_valid & has_tracers & valid_mass
 
-dm_non_zero_mask = np.where(np.any(dm_gal_accretion_channels[:,:] > 0, axis = 1))[0]
+mass_values = log_stellar_mass[valid_mass]
+mass_bins = funcs.binData_med(mass_values, np.zeros(mass_values.size), numBins)[0]
+fraction_bins = np.full((target_snaps.size, class_ids.size, numBins), np.nan, dtype=np.float64)
 
-dm_mass_bins, dm_mergers_bins,_ ,_ = funcs.binData_med(stellar_masses[dm_non_zero_mask],\
-                                                       dm_gal_accretion_channels[dm_non_zero_mask,2], numBins)
-_, dm_stripped_from_halos_bins,_ ,_ = funcs.binData_med(stellar_masses[dm_non_zero_mask],\
-                                                       dm_gal_accretion_channels[dm_non_zero_mask,3], numBins)
-_, dm_stripped_from_sat_bins,_ ,_ = funcs.binData_med(stellar_masses[dm_non_zero_mask],\
-                                                            dm_gal_accretion_channels[dm_non_zero_mask,6], numBins)
-_, dm_from_igm_bins,_ ,_ = funcs.binData_med(stellar_masses[dm_non_zero_mask],\
-                                                         dm_gal_accretion_channels[dm_non_zero_mask,0], numBins)
+for target_index in range(target_snaps.size):
+    valid_trees = valid_tree_by_target[target_index, valid_mass]
 
-#### exsitu ####
+    for class_index in range(class_ids.size):
+        fractions = fractions_by_target[target_index, valid_mass, class_index].copy()
+        fractions[~valid_trees] = np.nan
+        _, y_median, _, _ = funcs.binData_med(mass_values, fractions, numBins)
+        fraction_bins[target_index, class_index] = y_median
 
-assert isfile('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_exsitu_test.hdf5'), 'Accretion channels file (ex-situ) does not exist!'
-f = h5py.File('/vera/ptmp/gc/olwitt/auxCats/' + basePath[32:39] + '/accretion_channels_exsitu_test.hdf5','r')
-subhaloFlag = f['subhaloFlag'][:]
-ex_gal_accretion_channels = f['accretion_channels/for_all_galaxies'][:,:]
-overall_fracs = f['accretion_channels/overall_fractions'][:]
-f.close()
+fig, ax = plt.subplots(1, 1, figsize=(16, 9))
 
-mask1 = np.nonzero(subhaloFlag)[0]
-stellar_masses = raw_stellar_masses[mask1]
-ex_mass_mask = np.nonzero(stellar_masses)[0]
-stellar_masses = np.log10(stellar_masses[ex_mass_mask])
-ex_gal_accretion_channels = ex_gal_accretion_channels[mask1[ex_mass_mask],:]
+for target_index, target_snap in enumerate(target_snaps):
+    linestyle = linestyle_cycle[target_index]
 
-ex_non_zero_mask = np.where(np.any(ex_gal_accretion_channels[:,:] > 0, axis = 1))[0]
+    for class_index, (color, label) in enumerate(zip(category_colors, category_labels)):
+        plt.plot(mass_bins, fraction_bins[target_index, class_index], color=color, linestyle=linestyle, label = label)
 
-ex_mass_bins, ex_mergers_bins,_ ,_ = funcs.binData_med(stellar_masses[ex_non_zero_mask],\
-                                                       ex_gal_accretion_channels[ex_non_zero_mask,2], numBins)
-_, ex_stripped_from_halos_bins,_ ,_ = funcs.binData_med(stellar_masses[ex_non_zero_mask],\
-                                                       ex_gal_accretion_channels[ex_non_zero_mask,3], numBins)
-_, ex_stripped_from_sat_bins,_ ,_ = funcs.binData_med(stellar_masses[ex_non_zero_mask],\
-                                                         ex_gal_accretion_channels[ex_non_zero_mask,6], numBins)
+category_handles = [mpatches.Patch(color=color, label=label) for label, color in zip(category_labels, category_colors)]
+snapshot_handles = [mlines.Line2D([],[],color="tab:gray",linestyle=linestyle_cycle[i],label=f"snap {snap}")for i, snap in enumerate(target_snaps)]
 
-angalc_m_star = np.array([6.27728841, 9.3708718, 10.36557844, 11.42453622])
-angalc_smooth = np.array([0.6, 0.18, 0.15, 0.38])
-angalc_clumpy = np.array([0, 0.05, 0.11, 0.19])
-angalc_inter = np.array([0, 0.21, 0.47, 0.19])
-angalc_wind = np.array([0.4, 0.56, 0.27, 0.24])
+category_legend = ax.legend(handles=category_handles, loc="upper right")
+ax.legend(handles=snapshot_handles, loc="upper left")
+ax.add_artist(category_legend)
 
-fig, ax = plt.subplots(1,1, figsize=(16,9))
+ax.set_xlabel(r"stellar mass [$\log_{10}(M_\odot)$]")
+ax.set_ylabel(r"Mass fraction $f_{bar}$")
+ax.set_xlim(np.min(mass_values), np.max(mass_values))
+ax.set_ylim(-0.03, 1.03)
 
-### in-situ ###
+integer_ticks = np.arange(int(np.ceil(np.min(mass_values))), int(np.floor(np.max(mass_values))) + 1, dtype=int)
+if integer_ticks.size:
+    ax.set_xticks(integer_ticks)
 
-plt.plot(mass_bins, recycled2_bins, color = 'tab:green', label = 'new recycled')
-plt.plot(mass_bins, from_igm_bins - recycled2_bins, color = 'tab:orange', label = 'new fresh accretion')
-plt.plot(mass_bins, mergers_bins, color = 'tab:red', label = 'mergers: gas (clumpy)')
-plt.plot(mass_bins, stripped_from_sat_bins, color = 'tab:brown', label = 'mergers: gas (clumpy)')
-plt.plot(mass_bins, stripped_from_halos_bins, color = 'tab:purple', label = 'stripped/ejected from halos')
-
-### ex-situ ###
-
-plt.plot(ex_mass_bins, ex_stripped_from_sat_bins, color = 'tab:brown', linestyle = 'dotted', label = 'stripped from satellites')
-plt.plot(ex_mass_bins, ex_stripped_from_halos_bins, color = 'tab:purple', linestyle = 'dotted')
-plt.plot(ex_mass_bins, ex_mergers_bins, color = 'tab:red', linestyle = 'dotted')
-
-### dm ###
-
-plt.plot(dm_mass_bins, dm_mergers_bins, color = 'tab:red', linestyle = 'dashed')
-# plt.plot(dm_mass_bins, dm_stripped_from_halos_bins, color = 'tab:purple', linestyle = 'dashed')
-plt.plot(dm_mass_bins, dm_stripped_from_sat_bins, color = 'tab:brown', linestyle = 'dashed')
-# plt.plot(dm_mass_bins, dm_from_igm_bins, color = 'tab:orange', linestyle = 'dashed')
-
-
-fresh = mpatches.Patch(color='tab:orange', label='fresh accretion')
-wind = mpatches.Patch(color='tab:green', label='wind recycled')
-merger = mpatches.Patch(color='tab:red', label='mergers: gas')
-stripped_from_sat = mpatches.Patch(color='tab:brown', label='stripped from satellites')
-strip = mpatches.Patch(color='tab:purple', label='stripped/ejected from halos')
-
-insitu = mlines.Line2D([], [], color='tab:gray', linestyle = 'solid', label='in-situ')
-dm = mlines.Line2D([], [], color='tab:gray', linestyle = 'dashed', label='DM')
-exsitu = mlines.Line2D([], [], color='tab:gray', linestyle = 'dotted', label='ex-situ')
-
-plt.scatter(angalc_m_star[1:], angalc_smooth[1:], marker = 'D', color = 'tab:orange', s = 120)
-plt.scatter(angalc_m_star[1:], angalc_clumpy[1:], marker = 'D', color = 'tab:red', s = 120)
-plt.scatter(angalc_m_star[1:], angalc_inter[1:], marker = 'D', color = 'tab:purple', s = 120)
-plt.scatter(angalc_m_star[1:], angalc_wind[1:], marker = 'D', color = 'tab:green', s = 120)
-
-D = plt.scatter(0,0, marker = 'D', color = 'gray', label = 'Anglés-Alcázar (2017)', s = 120)
-
-legend1 = plt.legend(handles = [fresh, wind, merger, stripped_from_sat, strip, D], loc = 'upper right')
-
-legend2 = plt.legend(handles = [insitu, exsitu, dm], loc = 'upper left')
-
-plt.gca().add_artist(legend1)
-
-plt.xlabel(r'stellar mass [$\log\,\rm{M}_\odot$]')
-plt.ylabel(r'$M_{\ast,\,\rm insitu}\,(\rm mode) \,/\, M_{\ast,\,\rm insitu}$')
-plt.xlim(9,12.0)
-
-ax.set_xticks([9,10,11,12])
-ax.set_xticklabels([9,10,11,12])
-
-plt.ylim(-0.03,1.03)
-plt.tight_layout()
-plt.savefig(dirname + f'/accretion_50-{run}_alltypes.pdf', format = 'pdf')
+fig.tight_layout()
+output_file = output_dir / f"accretion_stellar_mass_trend_snap{start_snap}_for_snap{target_snaps[0]}_to_snap{target_snaps[-1]}.pdf"
+plt.savefig(output_file, format = 'pdf')

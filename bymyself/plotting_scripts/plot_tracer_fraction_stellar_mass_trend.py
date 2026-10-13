@@ -8,7 +8,7 @@ from os.path import isfile, isdir
 
 plt.style.use('fancy_plots2.mplstyle')
 
-dirname = "/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics"
+dirname = "/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/tracer_fraction_stellar_mass_trend"
 assert isdir(dirname), 'output directory does not exist!'
 
 start_snap = int(sys.argv[2])
@@ -108,11 +108,11 @@ category_fractions_by_bin = np.zeros(category_counts_by_bin.shape, dtype=np.floa
 nonempty_bins = classified_counts_by_bin > 0
 category_fractions_by_bin[nonempty_bins] = category_counts_by_bin[nonempty_bins] / classified_counts_by_bin[nonempty_bins, None]
 
-fig, ax = plt.subplots(1, 1, figsize=(14, 8))
-bar_width = 0.85 * bin_width
+fig, ax = plt.subplots(1, 1, figsize=(14, 12))
+bar_width = 0.55 * bin_width
 bar_bottom = np.zeros(mass_bin_centers.size, dtype=np.float64)
 category_labels = ["Always gas", "Gas/star only", "Gas/BH only", "Other"]
-category_colors = ["tab:blue", "tab:orange", "tab:green", "tab:gray"]
+category_colors = ["#4477AA", "#EE7733", "#228833", "#BBBBBB"]
 
 for class_id, (label, color) in enumerate(zip(category_labels, category_colors)):
     heights = category_fractions_by_bin[:, class_id]
@@ -123,9 +123,14 @@ plt.xlabel(r"stellar mass [$\log_{10}(M_\odot)$]")
 plt.ylabel(r"$M_{\mathrm{tracers,inner}} (\mathrm{mode}) / M_{\mathrm{tracers,inner}}$")
 plt.xlim(mass_bin_edges[0], mass_bin_edges[-1])
 plt.ylim(0.0, 1.05)
-plt.xticks(mass_bin_edges)
+
+integer_ticks = np.arange(int(np.ceil(mass_bin_edges[0])), int(np.floor(mass_bin_edges[-1])) + 1, dtype=int)
+ax.set_xticks(integer_ticks)
+ax.set_xticklabels([str(tick) for tick in integer_ticks])
+ax.tick_params(axis="x", rotation=0)
 
 plt.tick_params(axis="x", rotation=45)
-plt.legend(loc="best", frameon=False)
+plt.legend(loc="upper center", bbox_to_anchor=(0.5, -0.18), ncol=len(category_labels), frameon=False)
+plt.subplots_adjust(bottom=0.24)
 plt.tight_layout()
 plt.savefig(dirname + f'/tracer_fraction_stellar_mass_trend_snap{start_snap}_for_snap{target_snaps[0]}_to_snap{target_snaps[-1]}.pdf', format = 'pdf')
