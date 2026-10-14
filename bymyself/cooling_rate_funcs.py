@@ -271,6 +271,22 @@ def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_back
 
     num_trees = start_ids.size
 
+    def known_states_for_snap(seed_snap, snap, classes):
+        parent_file = data_dir / f"parent_indices_start_{seed_snap}_target_{snap}.hdf5"
+        group_name = f"snap_0{snap}"
+
+        with h5py.File(parent_file, "r") as f:
+            parents = np.asarray(f[f"{group_name}/parent_indices"][:], dtype=np.int64,)
+
+        parent_index = parents[:, 0]
+        parent_type = parents[:, 1]
+        parent_found = parent_index >= 0
+
+        gas_known = (parent_found & (parent_type == 0) & (classes >= 0) & (classes <= 4))
+        non_gas_known = (parent_found & ((parent_type == 1) | (parent_type == 2)))
+
+        return gas_known | non_gas_known
+
     def read_and_count_history(seed_snap, target_snaps, edge):
         """
         edge='last': 用历史最后一个快照的类别作为边界类别。
@@ -285,7 +301,7 @@ def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_back
             first_tree_valid = np.asarray(f["tree_valid"][:], dtype=bool)
 
         ever_inner = first_classes == 0
-        all_states_known = (first_classes >= 0) & (first_classes <= 4)
+        all_states_known = known_states_for_snap(seed_snap, first_snap, first_classes)
         tree_valid_all = first_tree_valid.copy()
 
         boundary_class = first_classes.copy()
@@ -298,7 +314,7 @@ def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_back
                 classes = np.asarray(f["tracers_class"][:], dtype=np.int8)
                 tree_valid = np.asarray(f["tree_valid"][:], dtype=bool)
 
-            all_states_known &= (classes >= 0) & (classes <= 4)
+            all_states_known &= known_states_for_snap(seed_snap, snap, classes)
             ever_inner |= classes == 0
             tree_valid_all &= tree_valid
 
