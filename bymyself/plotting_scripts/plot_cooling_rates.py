@@ -20,12 +20,12 @@ start_snap_forward = 95
 num_bins = 25
 
 lgal_file = data_dir / f"Lgal_cooling_rate_{start_snap_backward}_and_{start_snap_forward}.hdf5"
-direct_file = distance_dir / f"tcrd_{start_snap_backward}_to_{start_snap_forward}.hdf5"
+in_file = distance_dir / f"tcrd_{start_snap_backward}_to_{start_snap_forward}.hdf5"
 out_file = distance_dir / f"tord_{start_snap_backward}_to_{start_snap_forward}.hdf5"
 modified_file = distance_dir / f"tracer_cooling_rate_modified_{start_snap_backward}_to_{start_snap_forward}.hdf5"
 tree_file = data_dir / "all_selected_trees.hdf5"
 
-required_files = [lgal_file, direct_file, out_file, modified_file, tree_file]
+required_files = [lgal_file, in_file, out_file, modified_file, tree_file]
 missing_files = [path for path in required_files if not path.is_file()]
 if missing_files:
     raise FileNotFoundError("Missing cooling-rate inputs:\n" + "\n".join(map(str, missing_files)))
@@ -39,9 +39,9 @@ with h5py.File(lgal_file, "r") as f:
     lgal_rate_msun_per_yr = np.asarray(f["cooling_rate"][:], dtype=np.float64)
     lgal_valid = np.asarray(f["valid"][:], dtype=bool)
 
-with h5py.File(direct_file, "r") as f:
-    direct_halo_mass = np.asarray(f["halo_mass"][:], dtype=np.float64)
-    direct_rate_msun_per_gyr = np.asarray(f["cooling_rate"][:], dtype=np.float64)
+with h5py.File(in_file, "r") as f:
+    in_halo_mass = np.asarray(f["halo_mass"][:], dtype=np.float64)
+    in_rate_msun_per_gyr = np.asarray(f["cooling_rate"][:], dtype=np.float64)
 
 with h5py.File(out_file, "r") as f:
     out_halo_mass = np.asarray(f["halo_mass"][:], dtype=np.float64)
@@ -57,8 +57,8 @@ tree_ordered_arrays = {
     "Lgal halo_mass": lgal_halo_mass,
     "Lgal cooling_rate": lgal_rate_msun_per_yr,
     "Lgal valid": lgal_valid,
-    "direct halo_mass": direct_halo_mass,
-    "direct cooling_rate": direct_rate_msun_per_gyr,
+    "direct halo_mass": in_halo_mass,
+    "direct cooling_rate": in_rate_msun_per_gyr,
     "out halo_mass": out_halo_mass,
     "out_rate": out_rate_msun_per_gyr,
     "modified halo_mass": modified_halo_mass,
@@ -69,17 +69,18 @@ tree_ordered_arrays = {
 
 
 # The three tracer rates are stored in Msun/Gyr; Lgal is already in Msun/yr.
-direct_rate_msun_per_yr = direct_rate_msun_per_gyr / 1.0e9
+in_rate_msun_per_yr = in_rate_msun_per_gyr / 1.0e9
 out_rate_msun_per_yr = out_rate_msun_per_gyr / 1.0e9
+direct_rate_msun_per_yr = in_rate_msun_per_yr + out_rate_msun_per_yr
 modified_rate_msun_per_yr = modified_rate_msun_per_gyr / 1.0e9
 
 # Use the direct-rate halo masses as the common tree-ordered x array for all curves.
-valid_mass_rows = np.isfinite(direct_halo_mass) & (direct_halo_mass > 0.0)
+valid_mass_rows = np.isfinite(in_halo_mass) & (in_halo_mass > 0.0)
 if not np.any(valid_mass_rows):
     raise ValueError("No finite positive halo masses are available for plotting.")
 
 tree_rows_for_binning = np.flatnonzero(valid_mass_rows)
-log_mass_for_binning = np.log10(direct_halo_mass[valid_mass_rows])
+log_mass_for_binning = np.log10(in_halo_mass[valid_mass_rows])
 plot_mass_min = float(np.min(log_mass_for_binning))
 plot_mass_max = float(np.max(log_mass_for_binning))
 if plot_mass_min == plot_mass_max:
@@ -113,8 +114,7 @@ def binned_median_log_rate(halo_mass, rate_msun_per_yr, sample_mask):
 
     return x_median, y_median
 
-
-def finish_plot(ax, output_file, legend_handles=None):
+def finish_plot(ax, output_file):
     ax.set_xlabel(r"$\log_{10}(M_{200c}/M_\odot)$")
     ax.set_ylabel(r"$\log_{10}[\dot{M}_{\rm cool}/(M_\odot\,\mathrm{yr}^{-1})]$")
     ax.set_xlim(plot_mass_min, plot_mass_max)
@@ -122,8 +122,6 @@ def finish_plot(ax, output_file, legend_handles=None):
     if integer_ticks.size:
         ax.set_xticks(integer_ticks)
     ax.grid(which="major", axis="both", alpha=0.25)
-    if legend_handles is not None:
-        ax.legend(handles=legend_handles, loc="best", frameon=False)
     fig = ax.figure
     fig.tight_layout()
     fig.savefig(output_file, format="pdf")
@@ -134,16 +132,17 @@ def finish_plot(ax, output_file, legend_handles=None):
 fig, ax = plt.subplots(1, 1, figsize=(16, 9))
 comparison_series = [
     ("Lgal cooling", lgal_halo_mass, lgal_rate_msun_per_yr, lgal_valid, "C0", "solid"),
-    ("Tracer cooling (direct)", direct_halo_mass, direct_rate_msun_per_yr, np.ones(num_trees, dtype=bool), "C1", "solid"),
+    ("Tracer cooling (direct)", in_halo_mass, direct_rate_msun_per_yr, np.ones(num_trees, dtype=bool), "C1", "solid"),
     ("Tracer cooling (modified)", modified_halo_mass, modified_rate_msun_per_yr, np.ones(num_trees, dtype=bool), "C2", "solid"),
 ]
 for label, halo_mass, rate, sample_mask, color, linestyle in comparison_series:
     x, y = binned_median_log_rate(halo_mass, rate, sample_mask)
     ax.plot(x, y, color=color, linestyle=linestyle, label=label)
 comparison_handles = [mlines.Line2D([], [], color=color, linestyle=linestyle, label=label) for label, _, _, _, color, linestyle in comparison_series]
-finish_plot(ax, output_dir / f"cooling_rate_comparison_{start_snap_backward}_{start_snap_forward}.pdf", comparison_handles)
+ax.legend(handles=comparison_handles, loc="lower right", frameon=False, fontsize=30, labelspacing=0.6, borderpad=0.5)
+finish_plot(ax, output_dir / f"cooling_rate_comparison_{start_snap_backward}_{start_snap_forward}.pdf")
 
-# Figure 2: split direct inflow and outflow rates by the sSFR class at their respective start snapshots.
+# Figure 2: compare modified, inflow, and outflow rates by sSFR group.
 starforming_backward = np.isin(ssfr_class_backward, [0, 1])
 quenched_backward = np.isin(ssfr_class_backward, [2, 3])
 starforming_forward = np.isin(ssfr_class_forward, [0, 1])
@@ -152,39 +151,28 @@ starforming_color = "#fd7825"
 quenched_color = "#440154"
 
 fig, ax = plt.subplots(1, 1, figsize=(16, 9))
-split_series = [
-    ("Star forming, in", direct_halo_mass, direct_rate_msun_per_yr, starforming_backward, starforming_color, "solid"),
-    ("Quenched, in", direct_halo_mass, direct_rate_msun_per_yr, quenched_backward, quenched_color, "solid"),
-    ("Star forming, out", out_halo_mass, out_rate_msun_per_yr, starforming_forward, starforming_color, "dashed"),
-    ("Quenched, out", out_halo_mass, out_rate_msun_per_yr, quenched_forward, quenched_color, "dashed"),
+combined_series = [
+    (modified_halo_mass, modified_rate_msun_per_yr, starforming_backward, starforming_color, "solid"),
+    (modified_halo_mass, modified_rate_msun_per_yr, quenched_backward, quenched_color, "solid"),
+    (in_halo_mass, in_rate_msun_per_yr, starforming_backward, starforming_color, "dashed"),
+    (in_halo_mass, in_rate_msun_per_yr, quenched_backward, quenched_color, "dashed"),
+    (out_halo_mass, out_rate_msun_per_yr, starforming_forward, starforming_color, "dotted"),
+    (out_halo_mass, out_rate_msun_per_yr, quenched_forward, quenched_color, "dotted"),
 ]
-for label, halo_mass, rate, sample_mask, color, linestyle in split_series:
+for halo_mass, rate, sample_mask, color, linestyle in combined_series:
     x, y = binned_median_log_rate(halo_mass, rate, sample_mask)
-    ax.plot(x, y, color=color, linestyle=linestyle, label=label)
+    ax.plot(x, y, color=color, linestyle=linestyle)
 
 ssfr_handles = [
     mpatches.Patch(color=starforming_color, label="Star forming"),
     mpatches.Patch(color=quenched_color, label="Quenched"),
 ]
-direction_handles = [
-    mlines.Line2D([], [], color="tab:gray", linestyle="solid", label="In"),
-    mlines.Line2D([], [], color="tab:gray", linestyle="dashed", label="Out"),
+rate_type_handles = [
+    mlines.Line2D([], [], color="tab:gray", linestyle="solid", label="Modified"),
+    mlines.Line2D([], [], color="tab:gray", linestyle="dashed", label="In"),
+    mlines.Line2D([], [], color="tab:gray", linestyle="dotted", label="Out"),
 ]
-ssfr_legend = ax.legend(handles=ssfr_handles, loc="upper right", frameon=False)
+ssfr_legend = ax.legend(handles=ssfr_handles, loc="upper left", frameon=False)
 ax.add_artist(ssfr_legend)
-ax.legend(handles=direction_handles, loc="upper left", frameon=False)
-finish_plot(ax, output_dir / f"tracer_rates_ssfr_{start_snap_backward}_{start_snap_forward}.pdf")
-
-# Figure 3: split the modified tracer rate into the four original backward-snapshot sSFR classes.
-ssfr_labels = {0: "Starburst", 1: "Main sequence", 2: "Green valley", 3: "Quenched"}
-ssfr_colors = {0: "#fd7825", 1: "#fde725", 2: "#35b779", 3: "#440154"}
-
-fig, ax = plt.subplots(1, 1, figsize=(16, 9))
-modified_handles = []
-for class_code in range(4):
-    class_mask = ssfr_class_backward == class_code
-    x, y = binned_median_log_rate(modified_halo_mass, modified_rate_msun_per_yr, class_mask)
-    ax.plot(x, y, color=ssfr_colors[class_code], label=ssfr_labels[class_code])
-    modified_handles.append(mlines.Line2D([], [], color=ssfr_colors[class_code], label=ssfr_labels[class_code]))
-finish_plot(ax, output_dir / f"modified_tracer_rate_ssfr_{start_snap_backward}_{start_snap_forward}.pdf", modified_handles)
-
+ax.legend(handles=rate_type_handles, loc="lower right", frameon=False, fontsize=30, labelspacing=0.6, borderpad=0.5)
+finish_plot(ax, output_dir / f"tracer_rates_modified_in_out_ssfr_{start_snap_backward}_{start_snap_forward}.pdf")
