@@ -96,18 +96,25 @@ in_fraction_by_bin = mean_fraction_in_mass_bins(log_stellar_mass_forward, in_fra
 out_fraction_by_bin = mean_fraction_in_mass_bins(log_stellar_mass_backward, out_fraction, valid_out, out_mass_bin_edges)
 
 fig, axes = plt.subplots(2, 1, figsize=(14, 12), sharey=True)
-category_colors = ["#4477AA", "#EE7733", "#228833"]
+category_colors_in = ["#4477AA", "#EE7733", "#228833"]
+category_colors_out = ["#CC6677", "#44AA99", "#AA4499"]
+
 panel_data = [
-    (axes[0], in_mass_bin_centers, in_mass_bin_edges, in_fraction_by_bin, ["First in", "Recycled in", "Former in"], f"In fraction (snap {snap_forward})"),
-    (axes[1], out_mass_bin_centers, out_mass_bin_edges, out_fraction_by_bin, ["Stay out", "Recycled out", "Stay in"], f"Out fraction (snap {snap_backward})"),
+    (axes[0], in_mass_bin_centers, in_mass_bin_edges, in_fraction_by_bin,
+     [2, 1, 0], ["Former in", "Recycled in", "First in"],
+     f"In fraction (snap {snap_forward})", ["#228833", "#EE7733", "#4477AA"]),
+    (axes[1], out_mass_bin_centers, out_mass_bin_edges, out_fraction_by_bin,
+     [2, 1, 0], ["Stay in", "Recycled out", "Stay out"],
+     f"Out fraction (snap {snap_backward})", ["#AA4499", "#44AA99", "#CC6677"]),
 ]
 
-for ax, mass_bin_centers, mass_bin_edges, fractions_by_bin, category_labels, title in panel_data:
-    ax.stackplot(mass_bin_centers, fractions_by_bin.T, labels=category_labels, colors=category_colors, edgecolor="black", linewidth=0.6)
+
+for ax, mass_bin_centers, mass_bin_edges, fractions_by_bin, order, category_labels, title, colors in panel_data:
+    ax.stackplot(mass_bin_centers, fractions_by_bin[:, order].T, labels=category_labels, colors=colors, edgecolor="black", linewidth=0.6)
     ax.set_title(title)
     ax.set_ylim(0.0, 1.05)
-    ax.set_ylabel("Mean tracer fraction per tree")
-    ax.legend(loc="upper right", frameon=False, ncol=3)
+    ax.set_ylabel("Mass fraction")
+    ax.legend(loc="lower left", frameon=True, facecolor="white", framealpha=0.7, edgecolor="none", ncol=3)
     ax.grid(axis="y", alpha=0.25)
     integer_ticks = np.arange(int(np.ceil(mass_bin_edges[0])), int(np.floor(mass_bin_edges[-1])) + 1, dtype=int)
     ax.set_xlim(mass_bin_edges[0], mass_bin_edges[-1])
