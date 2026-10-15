@@ -66,7 +66,7 @@ for snap in snaps:
         bins=bin_edges,
         density=True,
         histtype="step",
-        linewidth=2.2,
+        linewidth=3.2,
         color=colors[snap],
         label=f"snap {snap}",
     )
