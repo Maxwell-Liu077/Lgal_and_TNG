@@ -5,12 +5,7 @@ from os.path import isfile
 from pathlib import Path
 import illustris_python as il
 import illustrisFuncs as iF
-
-def get_snap_column(snap, snap_numbers):
-    matches = np.flatnonzero(snap_numbers == snap)
-    if matches.size != 1:
-        raise ValueError("Snapshot {snap} must occur exactly once in snap_numbers; found {matches.size} matches.")
-    return int(matches[0])
+import funcs
 
 def load_m200c_msun(basePath, snap, fof_ids, h):
     group_m200c = il.groupcat.loadHalos(basePath, snap, fields=["Group_M_Crit200"])
@@ -36,8 +31,8 @@ def Lgal_cooling_rate(basePath, snap_1, snap_2):
     start_subhalo_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
     num_trees = start_subhalo_ids.size
 
-    col_1 = get_snap_column(snap_1, snap_numbers)
-    col_2 = get_snap_column(snap_2, snap_numbers)
+    col_1 = funcs.get_snap_column(snap_1, snap_numbers)
+    col_2 = funcs.get_snap_column(snap_2, snap_numbers)
 
     halos_1 = np.asarray(f["mpb_fof_ids"][:, col_1], dtype=np.int64)
     halos_2 = np.asarray(f["mpb_fof_ids"][:, col_2], dtype=np.int64)
@@ -92,8 +87,8 @@ def tracer_cooling_rate_direct(basePath, target_snap, start_snap):
     snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
     num_trees = start_ids.size
 
-    col_start = get_snap_column(start_snap, snap_numbers)
-    col_target = get_snap_column(target_snap, snap_numbers)
+    col_start = funcs.get_snap_column(start_snap, snap_numbers)
+    col_target = funcs.get_snap_column(target_snap, snap_numbers)
 
     fof_start = np.asarray(f["mpb_fof_ids"][:, col_start], dtype=np.int64)
     fof_target = np.asarray(f["mpb_fof_ids"][:, col_target], dtype=np.int64)
@@ -165,8 +160,8 @@ def tracer_out_rate_direct(basePath, target_snap, start_snap):
     snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
     num_trees = start_ids.size
 
-    col_start = get_snap_column(start_snap, snap_numbers)
-    col_target = get_snap_column(target_snap, snap_numbers)
+    col_start = funcs.get_snap_column(start_snap, snap_numbers)
+    col_target = funcs.get_snap_column(target_snap, snap_numbers)
 
     fof_start = np.asarray(f["mpb_fof_ids"][:, col_start], dtype=np.int64)
     fof_target = np.asarray(f["mpb_fof_ids"][:, col_target], dtype=np.int64)
@@ -227,25 +222,6 @@ def tracer_out_rate_direct(basePath, target_snap, start_snap):
     return
 
 def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_backward, start_snap_forward, target_snaps_backward):
-    '''
-    1. 已通过连续调用 distance_temp_cats 获得了 start_snap_forward 中 inner gas 的 tracer 在 target_snaps_forward 中、start_snap_backward 中 inner gas 的 tracer 在 target_snaps_backward 中的位置距离分类；
-       已通过调用 ssfr_classify_galaxies 获得了 start_snap_backward 和 start_snap_forward 中的 ssfr 分类；
-    2. target_snaps_forward 均在 start_snap 之前，target_snaps_backward 均在 start_snap 之后；
-    3. tracer_mass_msun 和 dt_Gyr 沿用 tracer_out_rate_direct 中的定义；
-    4. 对于 target_snaps_forward，考察 start_snap_forward 的 inner gas tracer 在其中的分类历史：
-       0: 从未被分类为 0 → first_in
-       1: 曾经被分类为 0，且 target_snaps 中最后一个 snap 的分类不为 0 → recycled_in
-       2: 曾经被分类为 0，且 target_snaps 中最后一个 snap 的分类为 0 → former_in
-    5. 对于 target_snaps_backward，考察 start_snap_backward 的 inner gas tracer 在其中的分类历史：
-       0: 从未被分类为 0 → stay_out
-       1: 曾经被分类为 0，且 target_snaps 中第一个 snap 的分类不为 0 → recycled_out
-       2: 曾经被分类为 0，且 target_snaps 中第一个 snap 的分类为 0 → stay_in
-    6. 分别统计 4、5 中各类 tracer 的数量与其占各自总数的比例，通过 tracer_mass_msun 转换为质量，利用 dt_Gyr 计算出速率；
-    7. 定义 tracer_cooling_rate_modified 为 first_in + stay_out
-    8. 仿照 tracer_out_rate_direct 给出顺序一致的 halo_mass  
-    9. 对 start_snap_backward 和 start_snap_forward 分别读取对应的 ssfr 分类并按照顺序保存
-
-    '''
 
     data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     tree_file = data_dir / "all_selected_trees.hdf5"
@@ -261,8 +237,8 @@ def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_back
         start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
         snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
 
-        col_backward = get_snap_column(start_snap_backward, snap_numbers)
-        col_forward = get_snap_column(start_snap_forward, snap_numbers)
+        col_backward = funcs.get_snap_column(start_snap_backward, snap_numbers)
+        col_forward = funcs.get_snap_column(start_snap_forward, snap_numbers)
 
         node_backward = np.asarray(f["mpb_subhalo_ids"][:, col_backward], dtype=np.int64)
         node_forward = np.asarray(f["mpb_subhalo_ids"][:, col_forward], dtype=np.int64)

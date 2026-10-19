@@ -84,3 +84,9 @@ def isin(a, b):
         else:
             out[i]=False
     return out
+
+def get_snap_column(snap, snap_numbers):
+    matches = np.flatnonzero(snap_numbers == snap)
+    if matches.size != 1:
+        raise ValueError("Snapshot {snap} must occur exactly once in snap_numbers; found {matches.size} matches.")
+    return int(matches[0])

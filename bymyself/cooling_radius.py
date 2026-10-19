@@ -217,7 +217,8 @@ def cooling_radius(basePath, snap):
     output_file = result_dir / f"cooling_radius_{snap}.hdf5"
     with h5py.File(output_file, "w") as f:
         f.create_dataset("cooling_radius", data=np.asarray(cr, dtype=np.float32), compression="gzip", compression_opts=4)
-        f.create_dataset("halo_flag",data=np.asarray(HaloFlag, dtype=np.ubyte))
+        f.create_dataset("M_hot", data=np.asarray(M_hot, dtype=np.float32), compression="gzip", compression_opts=4)
+        f.create_dataset("halo_flag", data=np.asarray(HaloFlag, dtype=np.ubyte))
 
     result = (cr, M_hot, halo_R_200c, t_dyn, HaloFlag)
 
