@@ -13,7 +13,7 @@ radial_max = 1.0
 msun_g = 1.98847e33
 kpc_cm = 3.085677581491367e21
 
-def select_objects(basePath, snap, seed=42):
+def select_objects(basePath, snap):
 
     tree_file = data_dir / "all_selected_trees.hdf5"
 
@@ -21,6 +21,8 @@ def select_objects(basePath, snap, seed=42):
         start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
         snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
         matches = np.flatnonzero(snap_numbers == snap)
+        if matches.size != 1:
+            raise ValueError(f"Expected one tree column for snap {snap}, found {matches.size}.")
         snap_column = int(matches[0])
         subhalo_ids = np.asarray(f["mpb_subhalo_ids"][:, snap_column], dtype=np.int64)
         fof_ids = np.asarray(f["mpb_fof_ids"][:, snap_column], dtype=np.int64)
@@ -37,14 +39,12 @@ def select_objects(basePath, snap, seed=42):
     valid_mass = np.zeros(start_ids.size, dtype=bool)
     valid_mass[valid_fof] = (np.isfinite(group_m200_msun[fof_ids[valid_fof]]) & (group_m200_msun[fof_ids[valid_fof]] > 0.0) & np.isfinite(group_r200_raw[fof_ids[valid_fof]]) & (group_r200_raw[fof_ids[valid_fof]] > 0.0) & np.all(np.isfinite(group_pos[fof_ids[valid_fof]]), axis=1))
     log_m200[valid_mass] = np.log10(group_m200_msun[fof_ids[valid_mass]])
-    rng = np.random.default_rng(seed)
-
     selected_rows = []
     selected_labels = []
     for label, mass_min, mass_max in mass_bin:
         candidates = np.flatnonzero(valid_mass & np.isfinite(log_m200) & (log_m200 >= mass_min) & (log_m200 < mass_max))
-        selected_rows.append(int(rng.choice(candidates)))
-        selected_labels.append(label)
+        selected_rows.extend(candidates.tolist())
+        selected_labels.extend([label] * candidates.size)
 
     selected_rows = np.asarray(selected_rows, dtype=np.int64)
     selected_fof_ids = fof_ids[selected_rows]
@@ -62,7 +62,7 @@ def select_objects(basePath, snap, seed=42):
     }
 
 
-def calculate_real_rou(mass_g, cell_volume_cm3, radial_bin, shell_volume_cm3, num_bins=num_radial_bins):
+def calculate_real_rou(mass_g, cell_volume_cm3, radial_bin, num_bins=num_radial_bins):
 
     valid_mass = np.isfinite(mass_g) & (mass_g > 0.0)
     valid_volume = valid_mass & np.isfinite(cell_volume_cm3) & (cell_volume_cm3 > 0.0)
@@ -70,11 +70,9 @@ def calculate_real_rou(mass_g, cell_volume_cm3, radial_bin, shell_volume_cm3, nu
     cell_density_mass_g = np.bincount(radial_bin[valid_volume], weights=mass_g[valid_volume], minlength=num_bins)
     hot_cell_volume_cm3 = np.bincount(radial_bin[valid_volume], weights=cell_volume_cm3[valid_volume], minlength=num_bins)
     rho_hot_cell_mean = np.full(num_bins, np.nan, dtype=np.float64)
-    rho_shell_mean = np.full(num_bins, np.nan, dtype=np.float64)
     np.divide(cell_density_mass_g, hot_cell_volume_cm3, out=rho_hot_cell_mean, where=hot_cell_volume_cm3 > 0.0)
-    np.divide(shell_mass_g, shell_volume_cm3, out=rho_shell_mean, where=(shell_volume_cm3 > 0.0) & (shell_mass_g > 0.0))
     
-    return rho_hot_cell_mean, rho_shell_mean, shell_mass_g, cell_density_mass_g, hot_cell_volume_cm3
+    return rho_hot_cell_mean, shell_mass_g, cell_density_mass_g, hot_cell_volume_cm3
 
 
 def calculate_real_T(mass_g, temperature, radial_bin, num_bins=num_radial_bins):
@@ -120,9 +118,9 @@ def interpolate_profile(radial_centers, profile, interpolation_radii, log_y=True
     return interpolated
 
 
-def real_physical_properties(basePath, snap, seed=42):
+def real_physical_properties(basePath, snap):
 
-    selected = select_objects(basePath, snap=snap, seed=seed)
+    selected = select_objects(basePath, snap=snap)
     header = il.groupcat.loadHeader(basePath, snap)
     box_size = header["BoxSize"]
     h = selected["hubble_param"]
@@ -130,11 +128,7 @@ def real_physical_properties(basePath, snap, seed=42):
     radial_edges = np.geomspace(radial_min, radial_max, num_radial_bins + 1)
     radial_centers = np.sqrt(radial_edges[:-1] * radial_edges[1:])
     interpolation_radii = np.geomspace(radial_min, radial_max, 200)
-    r200_phys_cm_by_halo = selected["r200c_raw"] * a / h * kpc_cm
-    shell_edges_cm_by_halo = radial_edges[None, :] * r200_phys_cm_by_halo[:, None]
-    shell_volume_cm3_by_halo = (4.0 / 3.0) * np.pi * (shell_edges_cm_by_halo[:, 1:] ** 3 - shell_edges_cm_by_halo[:, :-1] ** 3)
-
-    profile_names = ("rho_hot_cell_mean_g_cm3", "rho_shell_mean_g_cm3", "temperature_mass_weighted_K", "metallicity_mass_weighted")
+    profile_names = ("rho_hot_cell_mean_g_cm3", "temperature_mass_weighted_K", "metallicity_mass_weighted")
     profiles = {name: np.full((selected["fof_id"].size, num_radial_bins), np.nan, dtype=np.float64) for name in profile_names}
     hot_cell_count = np.zeros((selected["fof_id"].size, num_radial_bins), dtype=np.int64)
     density_cell_count = np.zeros_like(hot_cell_count)
@@ -194,14 +188,13 @@ def real_physical_properties(basePath, snap, seed=42):
         np.divide(mass_msun, density_msun_kpc3, out=cell_volume_kpc3, where=valid_density)
         cell_volume_cm3 = cell_volume_kpc3 * kpc_cm ** 3
 
-        rho_cell, rho_shell, shell_mass_g, density_mass_g, cell_volume_sum_cm3 = calculate_real_rou(mass_g, cell_volume_cm3, radial_bin, shell_volume_cm3_by_halo[object_index])
+        rho_cell, shell_mass_g, density_mass_g, cell_volume_sum_cm3 = calculate_real_rou(mass_g, cell_volume_cm3, radial_bin)
         mean_temperature, _ = calculate_real_T(mass_g, temperature_profile_cells, radial_bin)
         mean_metallicity, _ = calculate_real_Z(mass_g, metallicity_profile_cells, radial_bin)
         shell_hot_gas_mass_g[object_index] = shell_mass_g
         shell_density_valid_mass_g[object_index] = density_mass_g
         shell_hot_cell_volume_cm3[object_index] = cell_volume_sum_cm3
         profiles["rho_hot_cell_mean_g_cm3"][object_index] = rho_cell
-        profiles["rho_shell_mean_g_cm3"][object_index] = rho_shell
         profiles["temperature_mass_weighted_K"][object_index] = mean_temperature
         profiles["metallicity_mass_weighted"][object_index] = mean_metallicity
 
@@ -215,6 +208,8 @@ def real_physical_properties(basePath, snap, seed=42):
 
     output_file = data_dir / f"real_physical_properties_{snap}.hdf5"
     with h5py.File(output_file, "w") as f:
+        f.create_dataset("tree_row", data=selected["tree_row"])
+        f.create_dataset("start_subhalo_id", data=selected["start_subhalo_id"])
         f.create_dataset("subhalo_id", data=selected["subhalo_id"])
         f.create_dataset("fof_id", data=selected["fof_id"])
         f.create_dataset("mass_bin", data=np.asarray(selected["mass_bin"], dtype=h5py.string_dtype("utf-8")))
@@ -223,7 +218,6 @@ def real_physical_properties(basePath, snap, seed=42):
         f.create_dataset("radial_bin_edges_r200c", data=radial_edges)
         f.create_dataset("radial_bin_centers_r200c", data=radial_centers)
         f.create_dataset("interpolation_radii_r200c", data=interpolation_radii)
-        f.create_dataset("shell_volume_cm3", data=shell_volume_cm3_by_halo)
         f.create_dataset("hot_gas_mass_g_in_shell", data=shell_hot_gas_mass_g)
         f.create_dataset("density_valid_hot_gas_mass_g_in_shell", data=shell_density_valid_mass_g)
         f.create_dataset("hot_gas_cell_volume_cm3", data=shell_hot_cell_volume_cm3)
