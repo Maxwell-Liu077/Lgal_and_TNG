@@ -1,105 +1,103 @@
+import h5py
 import illustris_python as il
 import matplotlib.pyplot as plt
 import numpy as np
-import h5py
-import illustrisFuncs as iF
-import funcs
-import matplotlib.lines as mlines
-import matplotlib.patches as mpatches
-from matplotlib.patches import Rectangle
-import matplotlib as mpl
+from pathlib import Path
 from scipy import interpolate
-import os
-from os.path import isfile
+from matplotlib.ticker import LogLocator
 
-plt.style.use('fancy_plots2.mplstyle')
+import funcs
 
+
+plt.style.use("fancy_plots2.mplstyle")
+
+snap = 99
+num_bins = 25
 basePath = "/public/share/chenhouzun/TNG50-1/output/"
-header = il.groupcat.loadHeader(basePath, 99)
-h = header['HubbleParam']
+data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+figure_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/cooling_radius")
+figure_dir.mkdir(parents=True, exist_ok=True)
 
-# set snapshots to plot
-snaps = np.array([99, 67, 40], dtype=np.int64)
-z_snaps = np.array([il.groupcat.loadHeader(basePath, int(snap))["Redshift"] for snap in snaps], dtype=np.float32)
+header = il.groupcat.loadHeader(basePath, snap)
+redshift = float(header["Redshift"])
 
+tree_file = data_dir / "all_selected_trees.hdf5"
+with h5py.File(tree_file, "r") as f:
+    start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
+    snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
+    snap_columns = np.flatnonzero(snap_numbers == snap)
+    fof_ids = np.asarray(f["mpb_fof_ids"][:, int(snap_columns[0])], dtype=np.int64)
 
-# specify directory to save plots
-dirname = '/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/cooling_radius'
-os.makedirs(dirname, exist_ok=True)
+analytic_file = data_dir / f"cooling_radius_{snap}.hdf5"
 
-style = 'solid'
-what_to_plot = 'r_vir'
-with mpl.rc_context({'xtick.top' : False}):
-    fig,ax = plt.subplots(1, 1, figsize = (16,9))
+with h5py.File(analytic_file, "r") as f:
+    analytic_radius_all = np.asarray(f["cooling_radius"][:], dtype=np.float64)
+    analytic_halo_flag = np.asarray(f["halo_flag"][:], dtype=bool)
 
-for i, snap in enumerate(snaps):
-    header = il.groupcat.loadHeader(basePath, snap)
-    h = header["HubbleParam"]
+real_file = data_dir / f"real_cooling_radius_{snap}.hdf5"
 
-    halos = il.groupcat.loadHalos(basePath, snap, fields=["Group_M_Crit200", "GroupFirstSub"])
-    group_masses = np.asarray(halos["Group_M_Crit200"], dtype=np.float64) * 1.0e10 / h
-    group_first_sub = np.asarray(halos["GroupFirstSub"], dtype=np.int64)
-    subhalo_mass_type = np.asarray(il.groupcat.loadSubhalos(basePath, int(snap), fields=["SubhaloMassType"]), dtype=np.float64)
+with h5py.File(real_file, "r") as f:
+    real_start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
+    halo_mass_msun = np.asarray(f["m200c_msun"][:], dtype=np.float64)
+    real_radius = np.asarray(f["cooling_radius_r200c"][:], dtype=np.float64)
+    real_status = np.asarray(f["status"][:], dtype=np.uint8)
+    real_analysis_valid = np.asarray(f["analysis_valid"][:], dtype=bool)
 
-    has_central = (group_first_sub >= 0) & (group_first_sub < subhalo_mass_type.shape[0])
-    central_stellar_mass = np.full(group_first_sub.size, np.nan, dtype=np.float64)
-    central_stellar_mass[has_central] = subhalo_mass_type[group_first_sub[has_central], 4] * 1.0e10 / h
+analytic_radius = np.full(start_ids.size, np.nan, dtype=np.float64)
+valid_fof = (fof_ids >= 0) & (fof_ids < analytic_radius_all.size)
+valid_rows = np.flatnonzero(valid_fof)
+analytic_radius[valid_rows] = analytic_radius_all[fof_ids[valid_rows]]
+analytic_valid = np.zeros(start_ids.size, dtype=bool)
+analytic_valid[valid_rows] = analytic_halo_flag[fof_ids[valid_rows]] & np.isfinite(analytic_radius[valid_rows]) & (analytic_radius[valid_rows] > 0.0)
 
-    central_mass_ok = has_central & np.isfinite(central_stellar_mass) & (central_stellar_mass > 1.0e7)
+valid_mass = np.isfinite(halo_mass_msun) & (halo_mass_msun > 0.0)
+real_valid = real_analysis_valid & (real_status == 1) & np.isfinite(real_radius) & (real_radius > 0.0)
+common_sample = valid_mass & analytic_valid & real_valid
 
-    assert isfile(f"/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snap}.hdf5"), "Cooling radius file does not exist!"
-    with h5py.File(f"/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/cooling_radius_{snap}.hdf5", "r") as f:
-        halo_flag = np.asarray(f["halo_flag"][:], dtype=bool)
-        cr = np.asarray(f["cooling_radius"][:], dtype=np.float64)
+log_halo_mass = np.log10(halo_mass_msun[common_sample])
+analytic_radius_selected = analytic_radius[common_sample]
+real_radius_selected = real_radius[common_sample]
+x_analytic, y_analytic, y16_analytic, y84_analytic = funcs.binData_med(log_halo_mass, analytic_radius_selected, num_bins)
+x_real, y_real, y16_real, y84_real = funcs.binData_med(log_halo_mass, real_radius_selected, num_bins)
 
-    plot_mask = (halo_flag & central_mass_ok & np.isfinite(group_masses) & (group_masses > 0.0) & np.isfinite(cr))
+fig, ax = plt.subplots(1, 1, figsize=(16, 9))
+ax.plot(x_analytic, y_analytic, color="C0", linewidth=4.0, label="Lgal analytic")
+ax.fill_between(x_analytic, y16_analytic, y84_analytic, color="C0", alpha=0.28)
+ax.plot(x_real, y_real, color="C1", linewidth=4.0, label="TNG measured")
+ax.fill_between(x_real, y16_real, y84_real, color="C1", alpha=0.28)
 
-    masses = np.log10(group_masses[plot_mask])
-    cr_selected = cr[plot_mask]
-    xmed, ymed, y16, y84 = funcs.binData_med(masses, cr_selected, 25)
+ax.axvspan(10.8, 11.2, color="lightgray", alpha=0.25)
+ax.axvspan(11.8, 12.2, color="lightgray", alpha=0.25)
+ax.axvspan(12.6, 13.4, color="lightgray", alpha=0.25)
 
-    ax.plot(xmed, ymed, color="C" + str(i), linestyle=style)
-    ax.fill_between(xmed, y16, y84, alpha=0.2)
-
-rec_dwarf = Rectangle((10.8, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
-ax.add_patch(rec_dwarf)
-rec_mw = Rectangle((11.8, -0.2), 0.4, 1900, color = 'lightgray', alpha = 0.3)
-ax.add_patch(rec_mw)
-rec_group = Rectangle((12.6, -0.2), 0.8, 1900, color = 'lightgray', alpha = 0.3)
-ax.add_patch(rec_group)
-
-ax.set_xlim(10,14)
-ax.set_ylim(0.01,10)
-ax.set_yscale('log')
-
-group_m = np.array([6.86093282699585, 7.398449420928955, 7.901801109313965, 8.393900871276855, 8.886045455932617,\
-                    9.339580535888672, 9.809768676757812, 10.323699951171875, 10.840004920959473, 11.344971656799316,\
-                    11.868677139282227, 12.379907608032227, 12.879098892211914, 13.441740036010742, 13.891986846923828])
-gal_m = np.array([4.742977619171143, 4.718081474304199, 4.761687278747559, 4.795966625213623, 4.861518859863281,\
-                  5.147671699523926, 6.013262748718262, 7.66148042678833, 8.850899696350098, 9.708621978759766,\
-                  10.465829849243164, 11.046808242797852, 11.511899948120117, 11.899462699890137, 12.20790958404541])
-
-secax = ax.twiny() # 创建一个共享纵轴、但拥有独立横轴的副坐标轴
-f_interp = interpolate.interp1d(gal_m, group_m) # 建立插值关系
-new_tick_locations = np.array([7., 8., 8.5, 9., 9.5, 10., 10.5, 11., 11.5, 12.])
-secax.set_xlim(ax.get_xlim()) # 让顶部坐标轴和底部坐标轴使用相同的横坐标范围
-secax.set_xticks(f_interp(new_tick_locations)) # 将顶部恒星质量刻度转换成对应的 halo mass 位置
-secax.set_xticklabels(new_tick_locations) # 将顶部刻度显示为恒星质量的数值，而不是实际的 halo mass
-secax.minorticks_off() # 关闭顶部坐标轴的小刻度
-secax.set_xlabel(r'stellar mass [$\log\,\rm{M}_\odot$]')
+ax.set_xlim(10.8, 13.4)
+max_radius = np.nanmax(np.concatenate((analytic_radius_selected, real_radius_selected)))
+ax.set_ylim(0.01, 11)
+ax.set_yscale("log")
+ax.set_xlabel(r"halo mass [$\log_{10}(M_{200c}/M_\odot)$]")
+ax.set_ylabel(r"$R_{\rm cool}/R_{\rm 200c}$")
 
 ax.minorticks_on()
-ax.grid(which = 'major',axis = 'y')
-ax.set_xticks([10,11,12,13,14])
-ax.set_xticklabels([10,11,12,13,14])
+ax.grid(which="major", axis="y")
+ax.set_xticks([11, 12, 13])
+ax.set_xticklabels([11, 12, 13])
+ax.legend(loc="lower left", frameon=False, fontsize=30)
 
-blue = mpatches.Patch(color='C0', linestyle = 'solid', label = f'z = {z_snaps[0]:.1f}')
-orange = mpatches.Patch(color='C1', linestyle = 'solid', label = f'z = {z_snaps[1]:.1f}')
-green = mpatches.Patch(color='C2', linestyle = 'solid', label = f'z = {z_snaps[2]:.1f}')
+group_m = np.array([6.86093282699585, 7.398449420928955, 7.901801109313965, 8.393900871276855, 8.886045455932617, 9.339580535888672, 9.809768676757812, 10.323699951171875, 10.840004920959473, 11.344971656799316, 11.868677139282227, 12.379907608032227, 12.879098892211914, 13.441740036010742, 13.891986846923828])
+gal_m = np.array([4.742977619171143, 4.718081474304199, 4.761687278747559, 4.795966625213623, 4.861518859863281, 5.147671699523926, 6.013262748718262, 7.66148042678833, 8.850899696350098, 9.708621978759766, 10.465829849243164, 11.046808242797852, 11.511899948120117, 11.899462699890137, 12.20790958404541])
 
-legend = plt.legend(handles=[blue,orange,green], ncol=1, loc = 'upper right') # ncol=1：图例分成一列
+secax = ax.twiny()
+f_interp = interpolate.interp1d(gal_m, group_m)
+stellar_mass_ticks = np.array([8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5])
+secax.set_xlim(ax.get_xlim())
+secax.set_xticks(f_interp(stellar_mass_ticks))
+secax.set_xticklabels(stellar_mass_ticks)
+secax.minorticks_off()
+ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
+ax.tick_params(axis="y", which="minor", left=True, right=True, length=4, width=0.8)
+secax.set_xlabel(r"stellar mass [$\log_{10}(M_\odot)$]")
 
-ax.set_xlabel(r'halo mass [$\log\,\rm{M}_\odot$]')
-ax.set_ylabel(r'Cooling radius $R_{\rm cr}$ [$R_{\rm 200c}$]')
-fig.tight_layout() # 自动调整图中的间距
-plt.savefig(dirname + '/cr_vs_mass_' + what_to_plot + f'_50-1.pdf',format='pdf')
+fig.tight_layout()
+output_file = figure_dir / f"cooling_radius_Lgal_vs_TNG_real_snap{snap}.pdf"
+fig.savefig(output_file, format="pdf")
+plt.close(fig)
