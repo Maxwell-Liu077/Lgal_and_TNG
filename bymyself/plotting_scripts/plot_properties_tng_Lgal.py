@@ -1,5 +1,3 @@
-"""按质量组绘制热气体密度、温度和金属丰度的中位径向剖面。"""
-
 from pathlib import Path
 import sys
 

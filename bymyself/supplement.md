@@ -1,7 +1,6 @@
 ## Outline
 ### 1. Cooling Radius in TNG50 Haloes
 #### Fig1: TNG中热气体剖面与半解析假设的差异
-- 单个星系
 - Dwarfs、MW-like、Groups
 - z=0、0.5、1.0、2.0
 
