@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from scipy import interpolate
+from matplotlib.ticker import LogLocator
 
 import funcs
 
@@ -89,6 +90,8 @@ secax.set_xlim(ax.get_xlim())
 secax.set_xticks(f_interp(stellar_mass_ticks))
 secax.set_xticklabels(stellar_mass_ticks)
 secax.minorticks_off()
+ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
+ax.tick_params(axis="y", which="minor", left=True, right=True, length=4, width=0.8)
 secax.set_xlabel(r"stellar mass [$\log_{10}(M_\odot)$]")
 
 fig.tight_layout()

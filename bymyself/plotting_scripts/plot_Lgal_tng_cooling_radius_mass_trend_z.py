@@ -5,8 +5,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 from pathlib import Path
 from scipy import interpolate
-
+from matplotlib.patches import Patch
 import funcs
+from matplotlib.ticker import LogLocator
 
 
 plt.style.use("fancy_plots2.mplstyle")
@@ -88,8 +89,8 @@ for snap, color in zip(snaps, snapshot_colors):
     x_real, y_real, _, _ = funcs.binData_med(log_halo_mass, real_selected, num_bins)
     x_analytic, y_analytic, _, _ = funcs.binData_med(log_halo_mass, analytic_selected, num_bins)
 
-    ax.plot(x_real, y_real, color=color, linestyle="solid", linewidth=2.2)
-    ax.plot(x_analytic, y_analytic, color=color, linestyle="dashed", linewidth=2.2)
+    ax.plot(x_real, y_real, color=color, linestyle="solid", linewidth=4.0)
+    ax.plot(x_analytic, y_analytic, color=color, linestyle="dashed", linewidth=4.0)
 
     all_plotted_radii.extend((real_selected, analytic_selected))
     plotted_snapshots.append(snap)
@@ -113,17 +114,17 @@ ax.minorticks_on()
 ax.set_xticks([11, 12, 13])
 
 redshift_handles = [
-    mlines.Line2D([], [], color=color, linestyle="solid", linewidth=2.2, label=f"z={redshifts[int(snap)]:.2f} (snap {int(snap)})")
+    Patch(facecolor=color, edgecolor="none", label=f"z={redshifts[int(snap)]:.1f}")
     for snap, color in zip(snaps, snapshot_colors)
     if int(snap) in plotted_snapshots
 ]
 method_handles = [
-    mlines.Line2D([], [], color="black", linestyle="solid", linewidth=2.2, label="TNG measured"),
-    mlines.Line2D([], [], color="black", linestyle="dashed", linewidth=2.2, label="L-GALAXIES"),
+    mlines.Line2D([], [], color="black", linestyle="solid", linewidth=4.0, label="TNG measured"),
+    mlines.Line2D([], [], color="black", linestyle="dashed", linewidth=4.0, label="Lgal analytic"),
 ]
-redshift_legend = ax.legend(handles=redshift_handles, loc="upper left", frameon=False, title="Redshift")
+redshift_legend = ax.legend(handles=redshift_handles, loc="lower left", frameon=False, fontsize=30, labelspacing=0.7)
 ax.add_artist(redshift_legend)
-ax.legend(handles=method_handles, loc="lower left", frameon=False, title="Cooling-radius model")
+ax.legend(handles=method_handles, loc="lower center", frameon=False, fontsize=30, labelspacing=0.7)
 
 group_m = np.array([6.86093282699585, 7.398449420928955, 7.901801109313965, 8.393900871276855, 8.886045455932617, 9.339580535888672, 9.809768676757812, 10.323699951171875, 10.840004920959473, 11.344971656799316, 11.868677139282227, 12.379907608032227, 12.879098892211914, 13.441740036010742, 13.891986846923828])
 gal_m = np.array([4.742977619171143, 4.718081474304199, 4.761687278747559, 4.795966625213623, 4.861518859863281, 5.147671699523926, 6.01326274871833, 7.66148042678833, 8.850899696350098, 9.708621978759766, 10.465829849243164, 11.046808242797852, 11.511899948120117, 11.899462699890137, 12.20790958404541])
@@ -134,6 +135,8 @@ secax.set_xlim(ax.get_xlim())
 secax.set_xticks(f_interp(stellar_mass_ticks))
 secax.set_xticklabels(stellar_mass_ticks)
 secax.minorticks_off()
+ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
+ax.tick_params(axis="y", which="minor", left=True, right=True, length=4, width=0.8)
 secax.set_xlabel(r"stellar mass [$\log_{10}(M_\odot)$]")
 
 fig.tight_layout()
