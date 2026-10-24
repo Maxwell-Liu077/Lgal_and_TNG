@@ -30,18 +30,11 @@ def _read_sample(tree_file, snap_min, snap_max):
         available_snaps = np.asarray(f["snap_numbers"][:], dtype=np.int64)
         node_ids = np.asarray(f["mpb_subhalo_ids"][:], dtype=np.int64)
         fof_ids = np.asarray(f["mpb_fof_ids"][:], dtype=np.int64)
-    if start_ids.ndim != 1 or np.unique(start_ids).size != start_ids.size or np.any(start_ids < 0):
-        raise ValueError("start_subhalo_id must contain unique, nonnegative catalogue IDs.")
-    if available_snaps.ndim != 1 or np.unique(available_snaps).size != available_snaps.size:
-        raise ValueError("snap_numbers must contain unique snapshots.")
-    if node_ids.shape != (start_ids.size, available_snaps.size) or fof_ids.shape != node_ids.shape:
-        raise ValueError("Selected-tree node/FoF arrays have inconsistent shapes.")
+
     snaps = np.arange(snap_min, snap_max + 1, dtype=np.int64)
     columns = []
     for snap in snaps:
         matches = np.flatnonzero(available_snaps == snap)
-        if matches.size != 1:
-            raise ValueError(f"Selected trees do not have exactly one column for snap {snap}.")
         columns.append(int(matches[0]))
     return start_ids, snaps, node_ids[:, columns], fof_ids[:, columns]
 

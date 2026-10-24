@@ -150,11 +150,29 @@ def real_physical_properties(basePath, snap, tree_rows=None, tree_file=None, out
     interpolation_profiles = {name + "_interpolated": np.full((selected["fof_id"].size, interpolation_radii.size), np.nan, dtype=np.float64) for name in profile_names}
 
     gas_fields = ["Coordinates", "Masses", "StarFormationRate", "InternalEnergy", "ElectronAbundance", "GFM_Metallicity", "Density"]
+    group_len_type = il.groupcat.loadHalos(basePath, snap, fields=["GroupLenType"])["GroupLenType"]
+    gas_count_by_halo = np.asarray(group_len_type[:, 0], dtype=np.int64)
+    if np.any(gas_count_by_halo < 0):
+        raise ValueError(f"GroupLenType contains negative gas counts at snap {snap}.")
+    gas_start_by_halo = np.concatenate(([0], np.cumsum(gas_count_by_halo[:-1], dtype=np.int64)))
+
+    # Load this snapshot's gas fields once; GroupLenType gives each FoF halo's contiguous slice.
+    gas_all = il.snapshot.loadSubset(basePath, snap, "gas", fields=gas_fields, float32=True)
+    total_gas_count = int(gas_count_by_halo.sum(dtype=np.int64))
+    loaded_gas_count = int(np.asarray(gas_all["Masses"]).size)
+    if total_gas_count > loaded_gas_count:
+        raise ValueError(f"FoF gas counts sum to {total_gas_count}, exceeding the {loaded_gas_count} gas cells returned by loadSubset at snap {snap}.")
+
+    gas = None
     for object_index in np.flatnonzero(selected["analysis_valid"]):
         fof_id = selected["fof_id"][object_index]
-        gas = il.snapshot.loadHalo(basePath, snap, int(fof_id), "gas", fields=gas_fields)
-        if gas.get("count", 0) == 0:
+        if fof_id >= gas_count_by_halo.size:
+            raise IndexError(f"FoF ID {fof_id} is outside the GroupLenType array at snap {snap}.")
+        gas_start = int(gas_start_by_halo[fof_id])
+        gas_end = gas_start + int(gas_count_by_halo[fof_id])
+        if gas_end == gas_start:
             continue
+        gas = {field: gas_all[field][gas_start:gas_end] for field in gas_fields}
 
         distance_raw = funcs.dist_vector_nb(selected["group_pos"][object_index], np.asarray(gas["Coordinates"], dtype=np.float64), box_size)
         radius_ratio = distance_raw / selected["r200c_raw"][object_index]
@@ -212,6 +230,8 @@ def real_physical_properties(basePath, snap, tree_rows=None, tree_file=None, out
 
         for name in profile_names:
             interpolation_profiles[name + "_interpolated"][object_index] = interpolate_profile(radial_centers, profiles[name][object_index], interpolation_radii, log_y=(name != "metallicity_mass_weighted"))
+
+    del gas_all, gas, group_len_type, gas_count_by_halo, gas_start_by_halo
 
     output_file = data_dir / f"real_physical_properties_all_{snap}.hdf5" if output_file is None else Path(output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
