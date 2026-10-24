@@ -12,9 +12,9 @@ radial_max = 1.0
 msun_g = 1.98847e33
 kpc_cm = 3.085677581491367e21
 
-def select_objects(basePath, snap):
+def select_objects(basePath, snap, tree_rows=None, tree_file=None):
 
-    tree_file = data_dir / "all_selected_trees.hdf5"
+    tree_file = data_dir / "all_selected_trees.hdf5" if tree_file is None else Path(tree_file)
 
     with h5py.File(tree_file, "r") as f:
         start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
@@ -25,6 +25,13 @@ def select_objects(basePath, snap):
         snap_column = int(matches[0])
         subhalo_ids = np.asarray(f["mpb_subhalo_ids"][:, snap_column], dtype=np.int64)
         fof_ids = np.asarray(f["mpb_fof_ids"][:, snap_column], dtype=np.int64)
+
+    selected_rows = np.arange(start_ids.size, dtype=np.int64) if tree_rows is None else np.asarray(tree_rows, dtype=np.int64)
+    if selected_rows.ndim != 1 or np.unique(selected_rows).size != selected_rows.size or np.any((selected_rows < 0) | (selected_rows >= start_ids.size)):
+        raise ValueError("tree_rows must contain unique, in-range tree row indices.")
+    start_ids = start_ids[selected_rows]
+    subhalo_ids = subhalo_ids[selected_rows]
+    fof_ids = fof_ids[selected_rows]
 
     header = il.groupcat.loadHeader(basePath, snap)
     h = header["HubbleParam"]
@@ -40,7 +47,6 @@ def select_objects(basePath, snap):
     candidate_fof_ids = fof_ids[candidate_rows]
     analysis_valid[candidate_rows] &= np.isfinite(group_m200_msun[candidate_fof_ids]) & (group_m200_msun[candidate_fof_ids] > 0.0) & np.isfinite(group_r200_raw[candidate_fof_ids]) & (group_r200_raw[candidate_fof_ids] > 0.0) & np.all(np.isfinite(group_pos[candidate_fof_ids]), axis=1)
 
-    selected_rows = np.arange(start_ids.size, dtype=np.int64)
     selected_fof_ids = fof_ids.copy()
     selected_m200 = np.full(start_ids.size, np.nan, dtype=np.float64)
     selected_r200 = np.full(start_ids.size, np.nan, dtype=np.float64)
@@ -118,9 +124,9 @@ def interpolate_profile(radial_centers, profile, interpolation_radii, log_y=True
     return interpolated
 
 
-def real_physical_properties(basePath, snap):
+def real_physical_properties(basePath, snap, tree_rows=None, tree_file=None, output_file=None):
 
-    selected = select_objects(basePath, snap=snap)
+    selected = select_objects(basePath, snap=snap, tree_rows=tree_rows, tree_file=tree_file)
     header = il.groupcat.loadHeader(basePath, snap)
     box_size = header["BoxSize"]
     h = selected["hubble_param"]
@@ -207,8 +213,12 @@ def real_physical_properties(basePath, snap):
         for name in profile_names:
             interpolation_profiles[name + "_interpolated"][object_index] = interpolate_profile(radial_centers, profiles[name][object_index], interpolation_radii, log_y=(name != "metallicity_mass_weighted"))
 
-    output_file = data_dir / f"real_physical_properties_all_{snap}.hdf5"
+    output_file = data_dir / f"real_physical_properties_all_{snap}.hdf5" if output_file is None else Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(output_file, "w") as f:
+        f.attrs["snap"] = int(snap)
+        f.attrs["scale_factor"] = float(a)
+        f.attrs["hubble_param"] = float(h)
         f.create_dataset("tree_row", data=selected["tree_row"])
         f.create_dataset("start_subhalo_id", data=selected["start_subhalo_id"])
         f.create_dataset("subhalo_id", data=selected["subhalo_id"])

@@ -18,12 +18,17 @@ header = il.groupcat.loadHeader(basePath, 99)
 h = header['HubbleParam']
 
 # set snapshots to plot
-snaps = np.array([99, 67, 40], dtype=np.int64)
+snaps = np.array([99], dtype=np.int64)
 z_snaps = np.array([il.groupcat.loadHeader(basePath, int(snap))["Redshift"] for snap in snaps], dtype=np.float32)
 
 # specify directory to save plots
 dirname = '/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/ssfr_m200c_classification'
 os.makedirs(dirname, exist_ok=True)
+
+tree_file = "/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/all_selected_trees.hdf5"
+assert isfile(tree_file), "Selected-tree file does not exist!"
+with h5py.File(tree_file, "r") as f:
+    start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
 
 for i, snap in enumerate(snaps):
     with mpl.rc_context({'xtick.top' : False}):
@@ -47,7 +52,7 @@ for i, snap in enumerate(snaps):
     subhalo_mstar_msun = np.asarray(subhalos["SubhaloMassType"][:, 4], dtype=np.float64) * 1.0e10 / h
     del subhalos
 
-    rows = np.flatnonzero(selection_flag)
+    rows = np.flatnonzero(selection_flag & np.isin(central_subhalo_ids, start_ids))
 
     selected_halo_ids = halo_ids[rows]
     selected_central_ids = central_subhalo_ids[rows]
@@ -89,7 +94,7 @@ for i, snap in enumerate(snaps):
     rec_group = Rectangle((12.6, -14), 0.4, 6, color="lightgray", alpha=0.3)
     ax.add_patch(rec_group)
 
-    ax.set_xlim(9, 13)
+    ax.set_xlim(10.6, 13.6)
     ax.set_ylim(-14, -8)
 
     group_m = np.array([6.86093282699585, 7.398449420928955, 7.901801109313965, 8.393900871276855, 8.886045455932617, 9.339580535888672, 9.809768676757812, 10.323699951171875, 10.840004920959473, 11.344971656799316, 11.868677139282227, 12.379907608032227, 12.879098892211914, 13.441740036010742, 13.891986846923828])
@@ -106,8 +111,8 @@ for i, snap in enumerate(snaps):
 
     ax.minorticks_on()
     ax.grid(which = 'major',axis = 'y')
-    ax.set_xticks([9,10,11,12,13])
-    ax.set_xticklabels([9,10,11,12,13])
+    ax.set_xticks([11,12,13])
+    ax.set_xticklabels([11,12,13])
 
     if legend_handles:
         legend_handles.append(Line2D([], [], color="black", marker="v", linestyle="None", label="SFR=0"))
@@ -118,4 +123,4 @@ for i, snap in enumerate(snaps):
     ax.set_xlabel(r"halo mass [$\log_{10}(M_{200c}/M_\odot)$]")
     ax.set_ylabel(r"$\log_{10}(\mathrm{sSFR}/\mathrm{yr}^{-1})$")
     fig.tight_layout()
-    plt.savefig(dirname + f'snap{snaps[i]}_50-1.pdf',format='pdf')
+    plt.savefig(os.path.join(dirname, f'snap{snap}_central.pdf'), format='pdf')

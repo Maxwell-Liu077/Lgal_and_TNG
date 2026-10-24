@@ -1,21 +1,24 @@
-"""Cooling radius versus halo mass, colored by BH properties and gas entropy."""
+"""Cooling radius versus halo mass with all/high/low median trends for three AGN properties."""
 
 from pathlib import Path
-
+import matplotlib.lines as mlines
 import h5py
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import LogLocator
-
+import matplotlib.patheffects as pe
 
 root = Path(__file__).resolve().parents[1]
 plt.style.use(root / "fancy_plots2.mplstyle")
 
 snap = 99
 radius_source = "TNG"  # "TNG": measured profiles; "Lgal": analytic cooling radius.
-point_size = 22
+point_size = 60
 point_alpha = 0.75
-color_map = "viridis"
+mass_bin_width = 0.25
+min_count_per_bin = 10
+median_linewidth = 5.5
+median_styles = [("High", "#FFB000", "solid"), ("Low", "#FF25E9", "solid")]
 
 data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
 figure_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/agn_cooling_radius")
@@ -32,12 +35,9 @@ with h5py.File(agn_file, "r") as f:
     energy_ratio = np.asarray(f["black_hole/energy_kinetic_to_thermal_ratio"][:], dtype=np.float64)
     bh_valid = np.asarray(f["black_hole/bh_valid"][:], dtype=bool)
     energy_ratio_valid = np.asarray(f["black_hole/energy_ratio_valid"][:], dtype=bool)
-    entropy_hot = np.asarray(f["entropy/entropy_hot_mass_weighted_keV_cm2"][:], dtype=np.float64)
     entropy_shell = np.asarray(f["entropy/entropy_non_sf_0p1_to_1_r200c_mass_weighted_keV_cm2"][:], dtype=np.float64)
-    entropy_hot_valid = np.asarray(f["entropy/entropy_valid_hot"][:], dtype=bool)
     entropy_shell_valid = np.asarray(f["entropy/entropy_valid_non_sf_shell"][:], dtype=bool)
 
-# Both upstream calculations preserve all selected-tree rows, including invalid rows.
 if radius_source == "TNG":
     cooling_file = data_dir / f"real_cooling_radius_{snap}.hdf5"
     with h5py.File(cooling_file, "r") as f:
@@ -68,67 +68,102 @@ elif radius_source == "Lgal":
 else:
     raise ValueError("radius_source must be 'TNG' or 'Lgal'.")
 
-base_sample = analysis_valid & cooling_valid & np.isfinite(halo_mass_msun) & (halo_mass_msun > 0.0) & np.isfinite(cooling_radius) & (cooling_radius > 0.0)
-if not np.any(base_sample):
-    raise ValueError(f"No selected tree halos have valid masses and {radius_source} cooling radii at snap {snap}.")
+valid_mass = analysis_valid & np.isfinite(halo_mass_msun) & (halo_mass_msun > 0.0)
+base_sample = valid_mass & cooling_valid & np.isfinite(cooling_radius) & (cooling_radius > 0.0)
 
 log_halo_mass = np.full(start_ids.size, np.nan, dtype=np.float64)
-log_halo_mass[base_sample] = np.log10(halo_mass_msun[base_sample])
-mass_min = float(np.min(log_halo_mass[base_sample]))
-mass_max = float(np.max(log_halo_mass[base_sample]))
-mass_padding = max(0.05, 0.03 * (mass_max - mass_min))
-radius_min = 10.0 ** np.floor(np.log10(np.min(cooling_radius[base_sample])))
-radius_max = 10.0 ** np.ceil(np.log10(np.max(cooling_radius[base_sample])))
-if radius_max <= radius_min:
-    radius_min /= 10.0
-    radius_max *= 10.0
-integer_ticks = np.arange(int(np.ceil(mass_min - mass_padding)), int(np.floor(mass_max + mass_padding)) + 1, dtype=int)
-redshift = 1.0 / scale_factor - 1.0
+log_halo_mass[valid_mass] = np.log10(halo_mass_msun[valid_mass])
 
-# Each panel uses its own property validity; a missing BH does not remove a halo from entropy panels.
+bin_mass_min = np.floor(np.min(log_halo_mass[valid_mass]) / mass_bin_width) * mass_bin_width
+bin_mass_max = np.ceil(np.max(log_halo_mass[valid_mass]) / mass_bin_width) * mass_bin_width
+if bin_mass_max <= bin_mass_min:
+    bin_mass_max = bin_mass_min + mass_bin_width
+mass_bin_edges = np.arange(bin_mass_min, bin_mass_max + 0.5 * mass_bin_width, mass_bin_width)
+mass_bin_centers = 0.5 * (mass_bin_edges[:-1] + mass_bin_edges[1:])
+num_mass_bins = mass_bin_centers.size
+mass_bin_indices = np.full(start_ids.size, -1, dtype=np.int64)
+mass_bin_indices[valid_mass] = np.searchsorted(mass_bin_edges, log_halo_mass[valid_mass], side="right") - 1
+mass_bin_indices[valid_mass] = np.minimum(mass_bin_indices[valid_mass], num_mass_bins - 1)
+
 panel_data = [
-    (bh_mass_msun, bh_valid, "BH mass", r"$\log_{10}(M_{\rm BH}/M_\odot)$", False),
-    (energy_ratio, energy_ratio_valid, "Cumulative feedback energy ratio", r"$\log_{10}(1+R_E)$", True),
-    (entropy_hot, entropy_hot_valid, "Hot gas entropy", r"$\log_{10}[K_{\rm hot}/(\mathrm{keV\,cm^2})]$", False),
-    (entropy_shell, entropy_shell_valid, "Non-star-forming CGM entropy", r"$\log_{10}[K_{\rm CGM}/(\mathrm{keV\,cm^2})]$", False),
+    (bh_mass_msun, bh_valid, "BH mass", r"$\log_{10}(M_{\rm BH}/M_\odot)$", False, None, "viridis"),
+    (energy_ratio, energy_ratio_valid, r"$R_E=E_{\rm Kinetic}/E_{\rm Thermal}$", r"$\log_{10}(1+R_E)$", True, None, "plasma"),
+    (entropy_shell, entropy_shell_valid, "CGM entropy", r"$\log_{10}[K_{\rm CGM}/(\mathrm{keV\,cm^2})]$", False, None, "magma"),
 ]
 
-fig, axes = plt.subplots(2, 2, figsize=(22, 16), sharex=True, sharey=True, layout="constrained")
-fig.suptitle(rf"{radius_label}: $z={redshift:.1f}$", fontsize=26)
+fig, axes = plt.subplots(1, 3, figsize=(30, 8), sharex=True, sharey=True, layout="constrained")
 
-for ax, (values, property_valid, title, colorbar_label, include_zero) in zip(axes.flat, panel_data):
+for ax, (values, property_valid, title, colorbar_label, include_zero, fixed_threshold, panel_cmap) in zip(axes.flat, panel_data):
     positive_values = values >= 0.0 if include_zero else values > 0.0
-    plot_mask = base_sample & property_valid & np.isfinite(values) & positive_values
+    property_sample = valid_mass & property_valid & np.isfinite(values) & positive_values
+    plot_mask = base_sample & property_sample
     number = int(np.count_nonzero(plot_mask))
 
-    if number:
-        # log10(1 + R_E) retains pure thermal cases with R_E == 0.
-        color_values = np.log1p(values[plot_mask]) / np.log(10.0) if include_zero else np.log10(values[plot_mask])
-        scatter = ax.scatter(log_halo_mass[plot_mask], cooling_radius[plot_mask], c=color_values, cmap=color_map, marker="s", s=point_size, alpha=point_alpha, edgecolors="none", rasterized=True)
-        colorbar = fig.colorbar(scatter, ax=ax, location="right", pad=0.025, fraction=0.05)
-        colorbar.set_label(colorbar_label, fontsize=21)
-        colorbar.ax.tick_params(labelsize=19)
-    else:
-        ax.text(0.5, 0.5, "No valid samples", transform=ax.transAxes, ha="center", va="center", fontsize=22)
+    high_sample = np.zeros(start_ids.size, dtype=bool)
+    low_sample = np.zeros(start_ids.size, dtype=bool)
+    bin_thresholds = np.full(num_mass_bins, np.nan, dtype=np.float64)
+    for bin_index in range(num_mass_bins):
+        reference_sample = property_sample & (mass_bin_indices == bin_index)
+        if not np.any(reference_sample):
+            continue
+        threshold = np.median(values[reference_sample]) if fixed_threshold is None else fixed_threshold
+        bin_thresholds[bin_index] = threshold
+        high_sample[reference_sample] = values[reference_sample] > threshold
+        low_sample[reference_sample] = values[reference_sample] <= threshold
+
+    group_samples = (plot_mask, plot_mask & high_sample, plot_mask & low_sample)
+    median_radius = np.full((3, num_mass_bins), np.nan, dtype=np.float64)
+    group_counts = np.zeros((3, num_mass_bins), dtype=np.int64)
+    for group_index, sample in enumerate(group_samples):
+        for bin_index in range(num_mass_bins):
+            in_bin = sample & (mass_bin_indices == bin_index)
+            group_counts[group_index, bin_index] = np.count_nonzero(in_bin)
+            if group_counts[group_index, bin_index] >= min_count_per_bin:
+                median_radius[group_index, bin_index] = np.median(cooling_radius[in_bin])
+
+    ax.axvspan(10.8, 11.2, color="lightgray", alpha=0.25)
+    ax.axvspan(11.8, 12.2, color="lightgray", alpha=0.25)
+    ax.axvspan(12.6, 13.4, color="lightgray", alpha=0.25)
+
+    color_values_raw = values[plot_mask].copy()
+    if include_zero:
+        positive_color_values = color_values_raw[color_values_raw > 0.0]
+        if positive_color_values.size == 0:
+            raise ValueError(f"Cannot map log10 values for {title}: the plotted sample has no positive values.")
+        color_values_raw[color_values_raw == 0.0] = np.min(positive_color_values)
+    color_values = np.log10(color_values_raw)
+    scatter = ax.scatter(log_halo_mass[plot_mask], cooling_radius[plot_mask], c=color_values, cmap=panel_cmap, marker="h", s=point_size, alpha=point_alpha, edgecolors="none", rasterized=True, zorder=2)
+    colorbar = fig.colorbar(scatter, ax=ax, location="right", pad=0.025, fraction=0.035, aspect=28.5)
+    colorbar.set_label(colorbar_label, fontsize=21)
+    colorbar.ax.tick_params(labelsize=19)
+
+    for group_index, (label, color, linestyle) in zip((1, 2), median_styles):
+        line, = ax.plot(mass_bin_centers, median_radius[group_index], color=color, linestyle=linestyle, linewidth=median_linewidth, label=label, zorder=20)
+        line.set_path_effects([pe.Stroke(linewidth=median_linewidth + 1.0, foreground="black"), pe.Normal()])
 
     ax.set_title(title, fontsize=24, pad=12)
     ax.set_xlabel(r"halo mass [$\log_{10}(M_{200c}/M_\odot)$]", fontsize=23)
     ax.set_ylabel(r"$R_{\rm cool}/R_{\rm 200c}$", fontsize=24)
-    ax.set_xlim(mass_min - mass_padding, mass_max + mass_padding)
+    ax.set_xlim(10.6, 13.6)
     ax.set_yscale("log")
-    ax.set_ylim(radius_min, radius_max)
-    if integer_ticks.size:
-        ax.set_xticks(integer_ticks)
+    ax.set_ylim(0.01, 10.0)
+    ax.set_xticks([11, 12, 13])
     ax.minorticks_on()
     ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=np.arange(2, 10)))
     ax.tick_params(which="both", direction="in", top=True, right=True, labelsize=21, labelbottom=True, labelleft=True)
     ax.grid(which="major", axis="y", alpha=0.25)
     ax.set_axisbelow(True)
-    ax.text(0.04, 0.96, f"$N={number:,}$", transform=ax.transAxes, ha="left", va="top", fontsize=20, bbox=dict(facecolor="white", alpha=0.75, edgecolor="none"))
-    print(f"Snap {snap}, {radius_label}, {title}: {number}/{start_ids.size} selected tree halos.", flush=True)
+    high_count = int(np.count_nonzero(group_samples[1]))
+    low_count = int(np.count_nonzero(group_samples[2]))
+    plotted_bin_counts = np.count_nonzero(group_counts >= min_count_per_bin, axis=1)
 
+median_handles = []
+for label, color, linestyle in median_styles:
+    handle = mlines.Line2D([], [], color=color, linestyle=linestyle, linewidth=median_linewidth, label=label)
+    handle.set_path_effects([pe.Stroke(linewidth=median_linewidth + 1.0, foreground="black"), pe.Normal()])
+    median_handles.append(handle)
+fig.legend(handles=median_handles, loc="upper center", bbox_to_anchor=(0.5, -0.02), frameon=False, fontsize=30, ncol=len(median_handles))
 figure_dir.mkdir(parents=True, exist_ok=True)
 output_file = figure_dir / f"cooling_radius_AGN_properties_{radius_source}_snap{snap}.pdf"
 fig.savefig(output_file, format="pdf", bbox_inches="tight")
 plt.close(fig)
-print(f"Saved AGN cooling-radius scatter plots to {output_file}", flush=True)

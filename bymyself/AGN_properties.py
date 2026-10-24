@@ -39,11 +39,14 @@ def calculate_bh_properties(basePath, snap=99, selected=None):
     for row in np.flatnonzero(selected["analysis_valid"]):
         subhalo_id = int(selected["subhalo_id"][row])
         bh = il.snapshot.loadSubhalo(basePath, snap, subhalo_id, 5, fields=bh_fields)
+        bh_count[row] = int(bh.get("count", 0))
+        if bh_count[row] == 0:
+            continue
+
         particle_ids = np.asarray(bh["ParticleIDs"], dtype=np.uint64)
         masses = np.asarray(bh["BH_Mass"], dtype=np.float64)
         rm_energy = np.asarray(bh["BH_CumEgyInjection_RM"], dtype=np.float64)
         qm_energy = np.asarray(bh["BH_CumEgyInjection_QM"], dtype=np.float64)
-        bh_count[row] = masses.size
 
         if masses.size == 0:
             continue
