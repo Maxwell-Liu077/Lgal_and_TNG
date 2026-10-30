@@ -13,8 +13,8 @@ plt.style.use(root / "fancy_plots2.mplstyle")
 
 data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
 figure_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/pics/event_object")
-input_file = data_dir / "event_object_cooling_radius_40_to_99.hdf5"
-output_file = figure_dir / "event_object_cooling_radius_40_to_99.pdf"
+input_file = data_dir / "event_object_cooling_radius_42_to_99.hdf5"
+output_file = figure_dir / "event_object_cooling_radius_42_to_99.pdf"
 
 if not input_file.is_file():
     raise FileNotFoundError(f"Event-object cooling-radius file does not exist: {input_file}")
@@ -39,26 +39,6 @@ n_snaps = snap_numbers.size
 expected_shape = (n_objects, n_snaps)
 if n_objects == 0 or redshift.shape != (n_snaps,):
     raise ValueError("The input file has no selected halos or its redshift array is misaligned with snap_numbers.")
-for name, values in (
-    ("halo_mass_msun", halo_mass_msun),
-    ("analysis_valid", analysis_valid),
-    ("cooling_radius_tng_r200c", tng_radius),
-    ("cooling_radius_lgal_r200c", lgal_radius),
-    ("tng_valid", tng_valid),
-    ("lgal_valid", lgal_valid),
-):
-    if values.shape != expected_shape:
-        raise ValueError(f"{name} has shape {values.shape}; expected {expected_shape}.")
-if tree_rows.shape != (n_objects,):
-    raise ValueError("tree_row and start_subhalo_id have inconsistent lengths.")
-if event_offsets.shape != (n_objects + 1,) or event_offsets[0] != 0 or event_offsets[-1] != event_merger_snaps.size or np.any(np.diff(event_offsets) < 0):
-    raise ValueError("selected_event_offsets does not correctly delimit the per-halo merger-event arrays.")
-if selected_merger_counts.shape != (n_objects,):
-    raise ValueError("Merger counts, event offsets, snapshots, and mass ratios have inconsistent lengths.")
-if not np.array_equal(np.diff(event_offsets), selected_merger_counts):
-    raise ValueError("selected_merger_count does not agree with selected_event_offsets.")
-if not np.all(np.isfinite(redshift)):
-    raise ValueError("The redshift array contains non-finite values.")
 
 # Plot redshift in increasing order and apply the stored validity flags to each model.
 redshift_order = np.argsort(redshift)

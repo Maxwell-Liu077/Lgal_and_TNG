@@ -161,8 +161,8 @@ def object_cooling_radius(basePath):
     data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
     tree_file = data_dir / "all_selected_trees.hdf5"
     event_file = data_dir / "event_object_halos.hdf5"
-    output_file = data_dir / "event_object_cooling_radius_40_to_99.hdf5"
-    snaps = np.arange(40, 100, dtype=np.int64)
+    output_file = data_dir / "event_object_cooling_radius_42_to_99.hdf5"
+    snaps = np.arange(42, 100, dtype=np.int64)
 
     with h5py.File(event_file, "r") as f:
         selected_tree_rows = np.asarray(f["selected_tree_row"][:], dtype=np.int64)

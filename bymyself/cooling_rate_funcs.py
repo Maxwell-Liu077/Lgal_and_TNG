@@ -75,6 +75,79 @@ def Lgal_cooling_rate(basePath, snap_1, snap_2):
 
     return
 
+def TNG_cooling_rate(basePath, snap_1, snap_2):
+
+    data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+    tree_file = data_dir / "all_selected_trees.hdf5"
+    snaps = (int(snap_1), int(snap_2))
+    radius_files = [data_dir / f"real_cooling_radius_{snap}.hdf5" for snap in snaps]
+
+    with h5py.File(tree_file, "r") as f:
+        start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
+        snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
+        columns = [funcs.get_snap_column(snap, snap_numbers) for snap in snaps]
+        node_ids = np.column_stack([np.asarray(f["mpb_subhalo_ids"][:, column], dtype=np.int64) for column in columns])
+        fof_ids = np.column_stack([np.asarray(f["mpb_fof_ids"][:, column], dtype=np.int64) for column in columns])
+
+    num_trees = start_ids.size
+    radius = np.full((num_trees, 2), np.nan, dtype=np.float64)
+    hot_mass_g = np.full_like(radius, np.nan)
+    t_dyn_s = np.full_like(radius, np.nan)
+    halo_mass_msun = np.full_like(radius, np.nan)
+    radius_status = np.zeros((num_trees, 2), dtype=np.uint8)
+    valid_snap = np.zeros((num_trees, 2), dtype=bool)
+
+    for snap_index, (snap, radius_file) in enumerate(zip(snaps, radius_files)):
+        with h5py.File(radius_file, "r") as f:
+            measured_radius = np.asarray(f["cooling_radius_r200c"][:], dtype=np.float64)
+            analysis_valid = np.asarray(f["analysis_valid"][:], dtype=bool)
+            status = np.asarray(f["status"][:], dtype=np.uint8)
+
+        radius[:, snap_index] = measured_radius
+        radius_status[:, snap_index] = status
+        header = il.groupcat.loadHeader(basePath, snap)
+        halo_mass_msun[:, snap_index] = load_m200c_msun(basePath, snap, fof_ids[:, snap_index], header["HubbleParam"])
+
+        # Keep the same hot-gas mass and dynamical-time definitions as Lgal_cooling_rate.
+        _, all_hot_mass_g, _, all_t_dyn_s, all_halo_flag = cr.cooling_radius(basePath, snap)
+        all_hot_mass_g = np.asarray(all_hot_mass_g, dtype=np.float64)
+        all_t_dyn_s = np.asarray(all_t_dyn_s, dtype=np.float64)
+        all_halo_flag = np.asarray(all_halo_flag, dtype=bool)
+
+        halo_ids = fof_ids[:, snap_index]
+        valid_fof = (halo_ids >= 0) & (halo_ids < all_hot_mass_g.size)
+        hot_mass_g[valid_fof, snap_index] = all_hot_mass_g[halo_ids[valid_fof]]
+        t_dyn_s[valid_fof, snap_index] = all_t_dyn_s[halo_ids[valid_fof]]
+        halo_valid = np.zeros(num_trees, dtype=bool)
+        halo_valid[valid_fof] = all_halo_flag[halo_ids[valid_fof]]
+        valid_snap[:, snap_index] = (analysis_valid & (status == 1) & (node_ids[:, snap_index] >= 0) & halo_valid
+            & np.isfinite(measured_radius) & (measured_radius > 0.0)
+            & np.isfinite(hot_mass_g[:, snap_index]) & (hot_mass_g[:, snap_index] >= 0.0)
+            & np.isfinite(t_dyn_s[:, snap_index]) & (t_dyn_s[:, snap_index] > 0.0)
+            & np.isfinite(halo_mass_msun[:, snap_index]) & (halo_mass_msun[:, snap_index] > 0.0))
+
+    valid = np.all(valid_snap, axis=1)
+    mass = np.full(num_trees, np.nan, dtype=np.float64)
+    rates = np.full(num_trees, np.nan, dtype=np.float64)
+    average_cr = np.mean(radius[valid], axis=1)
+    average_M_hot = np.mean(hot_mass_g[valid], axis=1)
+    average_t_dyn = np.mean(t_dyn_s[valid], axis=1)
+    mass[valid] = np.mean(halo_mass_msun[valid], axis=1)
+    rates[valid] = average_M_hot * np.clip(average_cr, 0.0, 1.0) / average_t_dyn * (365.25 * 24 * 3600) / 1.98847e33
+
+    output_file = data_dir / f"TNG_cooling_rate_{snaps[0]}_and_{snaps[1]}.hdf5"
+    with h5py.File(output_file, "w") as f:
+        datasets = {"start_subhalo_id": start_ids, "snap_numbers": np.asarray(snaps, dtype=np.int64),
+            "halo_id_snap_1": fof_ids[:, 0], "halo_id_snap_2": fof_ids[:, 1],
+            "subhalo_id_snap_1": node_ids[:, 0], "subhalo_id_snap_2": node_ids[:, 1],
+            "halo_mass": mass, "cooling_rate": rates, "valid": valid.astype(np.uint8),
+            "cooling_radius_r200c": radius, "M_hot_g": hot_mass_g, "t_dyn_s": t_dyn_s,
+            "cooling_radius_status": radius_status, "valid_snap": valid_snap.astype(np.uint8)}
+        for name, values in datasets.items():
+            f.create_dataset(name, data=values, compression="gzip", compression_opts=4)
+
+    return 
+
 def tracer_cooling_rate_direct(basePath, target_snap, start_snap):
     '''
     target_snap < start_snap
@@ -137,14 +210,18 @@ def tracer_cooling_rate_direct(basePath, target_snap, start_snap):
     dt_Gyr = iF.get_time_difference_in_Gyr(a_target, a_start)
 
     tcrd = total_mass / dt_Gyr
+    # source_mass columns: Outer cold, Inner hot, Outer hot, outside R200c.
+    hot_to_cold_rate = (source_mass[:, 1] + source_mass[:, 2]) / dt_Gyr
+    cold_to_cold_rate = source_mass[:, 0] / dt_Gyr
 
     filename = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/distance_cats/tcrd_{target_snap}_to_{start_snap}.hdf5'
-    f = h5py.File(filename,'w')
-
-    f.create_dataset('halo_mass',data = halo_mass)
-    f.create_dataset('cooling_rate',data = tcrd)
-    f.create_dataset('source_counts', data = source_counts)
-    f.create_dataset('source_fraction', data = source_fraction)
+    with h5py.File(filename, 'w') as f:
+        f.create_dataset('halo_mass', data=halo_mass)
+        f.create_dataset('cooling_rate', data=tcrd).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('hot_to_cold_rate_msun_per_gyr', data=hot_to_cold_rate).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('cold_to_cold_rate_msun_per_gyr', data=cold_to_cold_rate).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('source_counts', data=source_counts)
+        f.create_dataset('source_fraction', data=source_fraction)
 
     return
 
@@ -210,14 +287,18 @@ def tracer_out_rate_direct(basePath, target_snap, start_snap):
     dt_Gyr = iF.get_time_difference_in_Gyr(a_start, a_target)
 
     tord = total_mass / dt_Gyr
+    # The same target classes now describe the destinations of Inner cold tracers.
+    cold_to_hot_rate = (source_mass[:, 1] + source_mass[:, 2]) / dt_Gyr
+    cold_to_cold_rate = source_mass[:, 0] / dt_Gyr
 
     filename = f'/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data/distance_cats/tord_{start_snap}_to_{target_snap}.hdf5'
-    f = h5py.File(filename,'w')
-
-    f.create_dataset('halo_mass',data = halo_mass)
-    f.create_dataset('out_rate',data = tord)
-    f.create_dataset('source_counts', data = source_counts)
-    f.create_dataset('source_fraction', data = source_fraction)
+    with h5py.File(filename, 'w') as f:
+        f.create_dataset('halo_mass', data=halo_mass)
+        f.create_dataset('out_rate', data=tord).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('cold_to_hot_rate_msun_per_gyr', data=cold_to_hot_rate).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('cold_to_cold_rate_msun_per_gyr', data=cold_to_cold_rate).attrs['units'] = 'Msun/Gyr'
+        f.create_dataset('source_counts', data=source_counts)
+        f.create_dataset('source_fraction', data=source_fraction)
 
     return
 
