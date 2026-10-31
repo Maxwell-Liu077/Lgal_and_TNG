@@ -302,193 +302,242 @@ def tracer_out_rate_direct(basePath, target_snap, start_snap):
 
     return
 
-def tracer_cooling_rate_modified(basePath, target_snaps_forward, start_snap_backward, start_snap_forward, target_snaps_backward):
+def tracer_classification(basePath, target_snaps_forward, start_snap_backward, start_snap_forward, target_snaps_backward, *, data_dir=None, output_file=None):
 
     data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
-    tree_file = data_dir / "all_selected_trees.hdf5"
     distance_dir = data_dir / "distance_cats"
+    start_snap_backward, start_snap_forward = int(start_snap_backward), int(start_snap_forward)
 
     forward_snaps = np.asarray(target_snaps_forward, dtype=np.int64)
     backward_snaps = np.asarray(target_snaps_backward, dtype=np.int64)
+    in_snaps = np.sort(forward_snaps)[::-1]
+    out_snaps = np.sort(backward_snaps)
 
-    forward_snaps = np.sort(forward_snaps)
-    backward_snaps = np.sort(backward_snaps)
-
-    with h5py.File(tree_file, "r") as f:
+    with h5py.File(data_dir / "all_selected_trees.hdf5", "r") as f:
         start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
         snap_numbers = np.asarray(f["snap_numbers"][:], dtype=np.int64)
-
         col_backward = funcs.get_snap_column(start_snap_backward, snap_numbers)
         col_forward = funcs.get_snap_column(start_snap_forward, snap_numbers)
-
-        node_backward = np.asarray(f["mpb_subhalo_ids"][:, col_backward], dtype=np.int64)
-        node_forward = np.asarray(f["mpb_subhalo_ids"][:, col_forward], dtype=np.int64)
-        fof_backward = np.asarray(f["mpb_fof_ids"][:, col_backward], dtype=np.int64)
-        fof_forward = np.asarray(f["mpb_fof_ids"][:, col_forward], dtype=np.int64)
-
+        metadata = {
+            "start_subhalo_id": start_ids,
+            "subhalo_id_backward": np.asarray(f["mpb_subhalo_ids"][:, col_backward], dtype=np.int64),
+            "subhalo_id_forward": np.asarray(f["mpb_subhalo_ids"][:, col_forward], dtype=np.int64),
+            "fof_id_backward": np.asarray(f["mpb_fof_ids"][:, col_backward], dtype=np.int64),
+            "fof_id_forward": np.asarray(f["mpb_fof_ids"][:, col_forward], dtype=np.int64),
+        }
     num_trees = start_ids.size
 
-    def known_states_for_snap(seed_snap, snap, classes):
-        parent_file = data_dir / f"parent_indices_start_{seed_snap}_target_{snap}.hdf5"
-        group_name = f"snap_0{snap}"
-
-        with h5py.File(parent_file, "r") as f:
-            parents = np.asarray(f[f"{group_name}/parent_indices"][:], dtype=np.int64,)
-
-        parent_index = parents[:, 0]
-        parent_type = parents[:, 1]
-        parent_found = parent_index >= 0
-
-        gas_known = (parent_found & (parent_type == 0) & (classes >= 0) & (classes <= 4))
-        non_gas_known = (parent_found & ((parent_type == 1) | (parent_type == 2)))
-
-        return gas_known | non_gas_known
-
-    def read_and_count_history(seed_snap, target_snaps, edge):
-        """
-        edge='last': 用历史最后一个快照的类别作为边界类别。
-        edge='first': 用历史第一个快照的类别作为边界类别。
-        """
-        first_snap = target_snaps[0]
-        first_file = distance_dir / f"distance_cats_start_{seed_snap}_target_{first_snap}.hdf5"
-
-        with h5py.File(first_file, "r") as f:
-            reference_offsets = np.asarray(f["tree_tracer_offsets"][:], dtype=np.int64)
-            first_classes = np.asarray(f["tracers_class"][:], dtype=np.int8)
-            first_tree_valid = np.asarray(f["tree_valid"][:], dtype=bool)
-
-        ever_inner = first_classes == 0
-        all_states_known = known_states_for_snap(seed_snap, first_snap, first_classes)
-        tree_valid_all = first_tree_valid.copy()
-
-        boundary_class = first_classes.copy()
-
-        for snap in target_snaps[1:]:
-            input_file = (distance_dir / f"distance_cats_start_{seed_snap}_target_{snap}.hdf5")
-
-            with h5py.File(input_file, "r") as f:
+    def classify_history(seed_snap, history_snaps):
+        reference_offsets = None
+        reference_parent_counts = None
+        history_class = history_parent_type = history_known = tree_valid_by_snap = None
+        tracer_to_tree = None
+        for column, snap in enumerate(history_snaps):
+            distance_file = distance_dir / f"distance_cats_start_{seed_snap}_target_{snap}.hdf5"
+            with h5py.File(distance_file, "r") as f:
+                file_start_ids = np.asarray(f["start_subhalo_id"][:], dtype=np.int64)
                 offsets = np.asarray(f["tree_tracer_offsets"][:], dtype=np.int64)
                 classes = np.asarray(f["tracers_class"][:], dtype=np.int8)
                 tree_valid = np.asarray(f["tree_valid"][:], dtype=bool)
 
-            all_states_known &= known_states_for_snap(seed_snap, snap, classes)
-            ever_inner |= classes == 0
-            tree_valid_all &= tree_valid
+            parent_file = data_dir / f"parent_indices_start_{seed_snap}_target_{snap}.hdf5"
+            with h5py.File(parent_file, "r") as f:
+                group = f[f"snap_0{snap}"]
+                parents = np.asarray(group["parent_indices"][:], dtype=np.int64)
+                parent_counts = np.asarray(group["numTracersInParents"][:], dtype=np.int64)
 
-            if edge == "last":
-                boundary_class = classes.copy()
+            if column == 0:
+                reference_offsets = offsets.copy()
+                tracer_to_tree = np.repeat(np.arange(num_trees, dtype=np.int64), np.diff(offsets))
+                history_class = np.full((classes.size, 5), -1, dtype=np.int8)
+                history_parent_type = np.full_like(history_class, -1)
+                history_known = np.zeros((classes.size, 5), dtype=bool)
+                tree_valid_by_snap = np.zeros((num_trees, 5), dtype=bool)
 
-        offsets = reference_offsets
-        tracer_to_tree = np.repeat(np.arange(num_trees, dtype=np.int64), np.diff(offsets))
+            parent_found = parents[:, 0] >= 0
+            parent_type = parents[:, 1]
+            gas_known = parent_found & (parent_type == 0) & np.isin(classes, [0, 1, 2, 3, 4])
+            non_gas_known = parent_found & np.isin(parent_type, [1, 2])
+            history_class[:, column] = classes
+            history_parent_type[:, column] = parent_type
+            history_known[:, column] = (gas_known | non_gas_known) & tree_valid[tracer_to_tree]
+            tree_valid_by_snap[:, column] = tree_valid
 
-        # 某个快照中整棵树无效时，该树的 tracer 历史也标记为未知。
-        if tracer_to_tree.size:
-            all_states_known &= tree_valid_all[tracer_to_tree]
+        nearest_known = history_known[:, 0]
+        nearest_gas = nearest_known & (history_parent_type[:, 0] == 0)
+        first_layer_class = np.full(history_class.shape[0], -1, dtype=np.int8)
+        first_layer_class[nearest_known & np.isin(history_parent_type[:, 0], [1, 2])] = -2
+        first_layer_class[nearest_gas & (history_class[:, 0] == 0)] = 0
+        first_layer_class[nearest_gas & np.isin(history_class[:, 0], [1, 2, 3, 4])] = 1
 
-        if edge == "last":
-            is_boundary_inner = boundary_class == 0
-        else:
-            is_boundary_inner = boundary_class == 0
+        is_flow = first_layer_class == 1
+        all_known = np.logical_and.accumulate(history_known, axis=1)
+        is_inner = history_known & (history_parent_type == 0) & (history_class == 0)
+        ever_inner = np.logical_or.accumulate(is_inner, axis=1)
+        layer2_member = is_flow[:, None] & all_known & ~ever_inner
+        # A confirmed inner state disproves membership even if another required state is unknown.
+        layer2_valid = is_flow[:, None] & (all_known | ever_inner)
+        return {
+            "tree_tracer_offsets": reference_offsets,
+            "history_snaps": history_snaps,
+            "history_class": history_class,
+            "history_parent_type": history_parent_type,
+            "history_state_known": history_known,
+            "tree_valid_by_snap": tree_valid_by_snap,
+            "first_layer_class": first_layer_class,
+            "layer2_member": layer2_member,
+            "layer2_valid": layer2_valid,
+        }
 
-        first_category = all_states_known & ~ever_inner
-        second_category = all_states_known & ever_inner & ~is_boundary_inner
-        third_category = all_states_known & ever_inner & is_boundary_inner
+    output_file = distance_dir / f"tracer_history_classification_{start_snap_backward}_to_{start_snap_forward}.hdf5" if output_file is None else Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = output_file.with_name(f".{output_file.name}.tmp")
+    try:
+        with h5py.File(temporary_file, "w") as f:
+            for name, values in metadata.items():
+                f.create_dataset(name, data=values)
+            f.create_dataset("history_levels", data=np.arange(1, 6, dtype=np.int8))
+            for direction, seed_snap, history_snaps, label in (("in", start_snap_forward, in_snaps, "first_in"), ("out", start_snap_backward, out_snaps, "stay_out")):
+                group = f.create_group(direction)
+                group.attrs["seed_snap"] = seed_snap
+                group.attrs["layer2_valid_definition"] = "Applies only to first_layer_class==1; membership is known for the requested prefix."
+                group.create_dataset("layer2_labels", data=np.asarray([f"{label}_{level}" for level in range(1, 6)], dtype="S16"))
+                history = classify_history(seed_snap, history_snaps)
+                for name, values in history.items():
+                    group.create_dataset(name, data=values, compression="gzip", compression_opts=4)
+                del history
+        temporary_file.replace(output_file)
+    finally:
+        if temporary_file.exists():
+            temporary_file.unlink()
+    return
 
-        counts = np.zeros((num_trees, 3), dtype=np.int64)
-        total_counts = np.diff(offsets).astype(np.int64)
 
-        category_masks = (first_category, second_category, third_category)
-
-        for tree in range(num_trees):
-            a = offsets[tree]
-            b = offsets[tree + 1]
-
-            for category, mask in enumerate(category_masks):
-                counts[tree, category] = np.count_nonzero(mask[a:b])
-
-        unknown_counts = total_counts - counts.sum(axis=1)
-
-        fractions = np.full((num_trees, 3), np.nan, dtype=np.float64)
-        np.divide(counts, total_counts[:, None], out=fractions, where=total_counts[:, None] > 0)
-        
-        history_complete = unknown_counts == 0
-
-        return {"offsets": offsets, "counts": counts, "fractions": fractions, "total_counts": total_counts, "unknown_counts": unknown_counts, "history_complete": history_complete}
-
-    in_history = read_and_count_history(start_snap_forward, forward_snaps, edge="last")
-    out_history = read_and_count_history(start_snap_backward, backward_snaps, edge="first")
+def calculate_tracer_cooling_statistics(basePath, start_snap_backward, start_snap_forward, classification_file=None, output_file=None, *, data_dir=None):
+    data_dir = Path("/public/home/zju_visitor/LiuYuanhao/SAM_project/bymyself/data")
+    distance_dir = data_dir / "distance_cats"
+    start_snap_backward, start_snap_forward = int(start_snap_backward), int(start_snap_forward)
+    classification_file = distance_dir / f"tracer_history_classification_{start_snap_backward}_to_{start_snap_forward}.hdf5" if classification_file is None else Path(classification_file)
+    output_file = distance_dir / f"tracer_cooling_rate_modified_{start_snap_backward}_to_{start_snap_forward}.hdf5" if output_file is None else Path(output_file)
+    with h5py.File(classification_file, "r") as f:
+        metadata = {name: np.asarray(f[name][:], dtype=np.int64) for name in ("start_subhalo_id", "subhalo_id_backward", "subhalo_id_forward", "fof_id_backward", "fof_id_forward")}
+    
+    num_trees = metadata["start_subhalo_id"].size
 
     header_backward = il.groupcat.loadHeader(basePath, start_snap_backward)
     header_forward = il.groupcat.loadHeader(basePath, start_snap_forward)
+    dt_gyr = float(iF.get_time_difference_in_Gyr(header_backward["Time"], header_forward["Time"]))
+    hubble_param = float(header_forward["HubbleParam"])
+    tracer_mass_msun = 5.73879e-6 * 1.0e10 / hubble_param
 
-    dt_Gyr = iF.get_time_difference_in_Gyr(header_backward["Time"], header_forward["Time"])
+    def count_by_tree(mask, offsets):
+        prefix = np.empty(mask.size + 1, dtype=np.int64)
+        prefix[0] = 0
+        np.cumsum(mask, dtype=np.int64, out=prefix[1:])
+        return prefix[offsets[1:]] - prefix[offsets[:-1]]
 
-    tracer_mass_msun = 5.73879e-6 * 1.0e10 / header_forward["HubbleParam"]
+    statistics = {}
+    with h5py.File(classification_file, "r") as f:
+        for direction in ("in", "out"):
+            group = f[direction]
+            offsets = np.asarray(group["tree_tracer_offsets"][:], dtype=np.int64)
+            first_class = np.asarray(group["first_layer_class"][:], dtype=np.int8)
+            members = np.asarray(group["layer2_member"][:], dtype=bool)
+            layer_valid = np.asarray(group["layer2_valid"][:], dtype=bool)
+            tree_valid = np.asarray(group["tree_valid_by_snap"][:], dtype=bool)
 
-    in_mass = in_history["counts"] * tracer_mass_msun
-    out_mass = out_history["counts"] * tracer_mass_msun
+            all_counts = np.column_stack([count_by_tree(first_class == 1, offsets), count_by_tree(first_class == 0, offsets)])
+            first_unknown_counts = count_by_tree(first_class == -1, offsets)
+            excluded_non_gas_counts = count_by_tree(first_class == -2, offsets)
+            first_complete = tree_valid[:, 0] & (first_unknown_counts == 0)
+            level_counts = np.column_stack([count_by_tree(members[:, level], offsets) for level in range(5)])
+            level_unknown_counts = np.column_stack([count_by_tree((first_class == 1) & ~layer_valid[:, level], offsets) for level in range(5)])
+            level_complete = first_complete[:, None] & (level_unknown_counts == 0)
 
-    in_rate = in_mass / dt_Gyr
-    out_rate = out_mass / dt_Gyr
+            all_fraction = np.full((num_trees, 2), np.nan, dtype=np.float64)
+            all_denominator = all_counts.sum(axis=1)
+            np.divide(all_counts, all_denominator[:, None], out=all_fraction, where=first_complete[:, None] & (all_denominator[:, None] > 0))
+            level_fraction = np.full((num_trees, 5), np.nan, dtype=np.float64)
+            np.divide(level_counts, all_counts[:, :1], out=level_fraction, where=level_complete & (all_counts[:, :1] > 0))
+            all_mass = all_counts.astype(np.float64) * tracer_mass_msun
+            level_mass = level_counts.astype(np.float64) * tracer_mass_msun
+            all_mass[~first_complete] = np.nan
+            level_mass[~level_complete] = np.nan
+            statistics[direction] = {
+                "all_counts": all_counts,
+                "counts": level_counts,
+                "all_fraction": all_fraction,
+                "fraction": level_fraction,
+                "all_mass": all_mass,
+                "mass": level_mass,
+                "all_valid": first_complete,
+                "valid": level_complete,
+                "total_counts": np.diff(offsets),
+                "first_layer_unknown_counts": first_unknown_counts,
+                "excluded_non_gas_counts": excluded_non_gas_counts,
+                "unknown_counts": level_unknown_counts,
+                "history_snaps": np.asarray(group["history_snaps"][:], dtype=np.int64),
+            }
 
-    in_rate[~in_history["history_complete"], :] = np.nan
-    out_rate[~out_history["history_complete"], :] = np.nan
-
-    rate_valid = in_history["history_complete"] & out_history["history_complete"]
-
-    # modified rate = first_in + stay_out
-    modified_rate = in_rate[:, 0] + out_rate[:, 0]
+    rate_valid = statistics["in"]["valid"][:, 4] & statistics["out"]["valid"][:, 4]
+    modified_rate = (statistics["in"]["mass"][:, 4] + statistics["out"]["mass"][:, 4]) / dt_gyr
     modified_rate[~rate_valid] = np.nan
-
-    mass_backward = load_m200c_msun(basePath, start_snap_backward, fof_backward, header_backward["HubbleParam"])
-    mass_forward = load_m200c_msun(basePath, start_snap_forward, fof_forward, header_forward["HubbleParam"],)
-
+    mass_backward = load_m200c_msun(basePath, start_snap_backward, metadata["fof_id_backward"], float(header_backward["HubbleParam"]))
+    mass_forward = load_m200c_msun(basePath, start_snap_forward, metadata["fof_id_forward"], hubble_param)
     halo_mass = 0.5 * (mass_backward + mass_forward)
 
     def read_ssfr_for_tree_nodes(snap, fof_ids, node_ids):
-        ssfr_file = data_dir / f"ssfr_classification_{snap}.hdf5"
-
-        with h5py.File(ssfr_file, "r") as f:
-            class_code_all = np.asarray(f["class_code"][:], dtype=np.int8)
-            central_ids_all = np.asarray(f["central_subhalo_id"][:], dtype=np.int64)
-            delta_all = np.asarray(f["delta_log_ssfr"][:], dtype=np.float64)
-            selection_flag_all = np.asarray(f["selection_flag"][:], dtype=bool)
+        with h5py.File(data_dir / f"ssfr_classification_{snap}.hdf5", "r") as f:
+            codes = np.asarray(f["class_code"][:], dtype=np.int8)
+            centrals = np.asarray(f["central_subhalo_id"][:], dtype=np.int64)
+            delta = np.asarray(f["delta_log_ssfr"][:], dtype=np.float64)
+            selected = np.asarray(f["selection_flag"][:], dtype=bool)
+            halo_ids = np.asarray(f["halo_id"][:], dtype=np.int64) if "halo_id" in f else np.arange(codes.size, dtype=np.int64)
 
         ssfr_class = np.full(num_trees, -1, dtype=np.int8)
-        ssfr_delta = np.full(num_trees, np.nan, dtype=np.float64)
         ssfr_valid = np.zeros(num_trees, dtype=bool)
-
-        fof_in_bounds = ((fof_ids >= 0) & (fof_ids < class_code_all.size))
-        rows = np.flatnonzero(fof_in_bounds)
-        fof = fof_ids[rows]
-        codes = class_code_all[fof]
-        delta = delta_all[fof]
-
-        valid_code = np.isin(codes, np.array([0, 1, 2, 3], dtype=np.int8))
-        central_matches = central_ids_all[fof] == node_ids[rows]
-
-        valid_delta = np.isfinite(delta) | (np.isneginf(delta) & (codes == 3))
-
-        valid_rows = rows[selection_flag_all[fof] & valid_code & central_matches & valid_delta]
-
-        ssfr_class[valid_rows] = class_code_all[fof_ids[valid_rows]]
-        ssfr_delta[valid_rows] = delta_all[fof_ids[valid_rows]]
+        order = np.argsort(halo_ids)
+        matches = np.searchsorted(halo_ids[order], fof_ids)
+        rows = np.flatnonzero((fof_ids >= 0) & (node_ids >= 0) & (matches < halo_ids.size))
+        rows = rows[halo_ids[order[matches[rows]]] == fof_ids[rows]]
+        catalogue_rows = order[matches[rows]]
+        usable = (selected[catalogue_rows] & np.isin(codes[catalogue_rows], [0, 1, 2, 3]) & (centrals[catalogue_rows] == node_ids[rows])
+            & (np.isfinite(delta[catalogue_rows]) | (np.isneginf(delta[catalogue_rows]) & (codes[catalogue_rows] == 3))))
+        valid_rows = rows[usable]
+        ssfr_class[valid_rows] = codes[catalogue_rows[usable]]
         ssfr_valid[valid_rows] = True
+        return ssfr_class, ssfr_valid
 
-        return ssfr_class
+    ssfr_backward, ssfr_valid_backward = read_ssfr_for_tree_nodes(start_snap_backward, metadata["fof_id_backward"], metadata["subhalo_id_backward"])
+    ssfr_forward, ssfr_valid_forward = read_ssfr_for_tree_nodes(start_snap_forward, metadata["fof_id_forward"], metadata["subhalo_id_forward"])
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = output_file.with_name(f".{output_file.name}.tmp")
+    try:
+        with h5py.File(temporary_file, "w") as f:
+            for name, values in metadata.items():
+                f.create_dataset(name, data=values)
+            f.create_dataset("history_levels", data=np.arange(1, 6, dtype=np.int8))
+            for direction, label in (("in", "first_in"), ("out", "stay_out")):
+                result = statistics[direction]
+                f.create_dataset(f"all_{direction}_labels", data=np.asarray([direction, "retained"], dtype="S16"))
+                f.create_dataset(f"{direction}_labels", data=np.asarray([f"{label}_{level}" for level in range(1, 6)], dtype="S16"))
+                for suffix in ("counts", "fraction", "mass", "valid"):
+                    for prefix, key in ((f"all_{direction}", f"all_{suffix}"), (direction, suffix)):
+                        dataset = f.create_dataset(f"{prefix}_{suffix}", data=result[key], compression="gzip", compression_opts=4)
+                        if suffix == "mass":
+                            dataset.attrs["units"] = "Msun"
+                for name in ("total_counts", "first_layer_unknown_counts", "excluded_non_gas_counts", "unknown_counts", "history_snaps"):
+                    f.create_dataset(f"{direction}_{name}", data=result[name], compression="gzip", compression_opts=4)
+            f.create_dataset("halo_mass", data=halo_mass).attrs["units"] = "Msun"
+            f.create_dataset("ssfr_class_backward", data=ssfr_backward)
+            f.create_dataset("ssfr_class_forward", data=ssfr_forward)
+            f.create_dataset("ssfr_valid_backward", data=ssfr_valid_backward)
+            f.create_dataset("ssfr_valid_forward", data=ssfr_valid_forward)
+            f.create_dataset("rate_valid", data=rate_valid)
+            f.create_dataset("modified_rate_msun_per_gyr", data=modified_rate).attrs["units"] = "Msun/Gyr"
+        temporary_file.replace(output_file)
+    finally:
+        if temporary_file.exists():
+            temporary_file.unlink()
 
-    ssfr_backward = read_ssfr_for_tree_nodes(start_snap_backward, fof_backward, node_backward)
-    
-    ssfr_forward = read_ssfr_for_tree_nodes(start_snap_forward, fof_forward, node_forward)
-
-    output_file = distance_dir / f"tracer_cooling_rate_modified_{start_snap_backward}_to_{start_snap_forward}.hdf5"
-
-    with h5py.File(output_file, "w") as f:
-        f.create_dataset("halo_mass", data=halo_mass)
-        f.create_dataset("ssfr_class_backward", data=ssfr_backward)
-        f.create_dataset("ssfr_class_forward", data=ssfr_forward)
-        f.create_dataset("in_fraction", data=in_history["fractions"])
-        f.create_dataset("out_fraction", data=out_history["fractions"])
-        f.create_dataset("modified_rate_msun_per_gyr", data=modified_rate)
-
-    return 
+    return
